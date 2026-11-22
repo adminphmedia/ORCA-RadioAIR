@@ -28,6 +28,7 @@ pub(crate) type ApiResult = Result<Response, ApiError>;
 mod ext;
 mod general_api;
 mod import_api;
+mod selector_api;
 mod plan;
 mod proc_api;
 
@@ -83,6 +84,7 @@ pub fn router(orca: St) -> Router {
         .merge(proc_api::routes())
         .merge(general_api::routes())
         .merge(import_api::routes())
+        .merge(selector_api::routes())
         .layer(middleware::from_fn_with_state(orca.clone(), general_api::perms))
         .layer(middleware::from_fn_with_state(orca.clone(), auth));
 

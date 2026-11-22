@@ -1,6 +1,25 @@
-# ORCA RadioAIR 0.4.0 – testovací verze
+# ORCA RadioAIR 0.5.0 – testovací verze
 
-## Novinky v 0.4.0
+## Novinky v 0.5.0
+- **ORCA Music Selector** – profesionální plánování hudby vedle jednoduchých clocků (Jazler): režimy Jednoduché / Stínový provoz / Aktivní (vratné, bez plánu nouzově z clocků).
+- **Průvodce formátem** – 20 formátů (CHR, CHR – ENERGIC CZ, Hot / Mainstream / Soft AC, Adult Hits, Classic Hits, Classic Rock, Alternative/AAA, Dance, Hip-hop/R&B, Urban AC, Country, Jazz, Klasika, World/Folk, Latin, News/Talk, Vánoce): mapování na kategorie, kontrola kapacity (obrat, proveditelnost odstupů), simulace týdne bez zápisu, použití jako verze.
+- **Pravidla formátu** jako věty: odstup skladby, interpreta (i hostujícího), verzí téže písně, alba, stejné hodiny, maxima za den, explicitní obsah podle hodin, max. stejných hodnot za sebou, energie; cíle zastoupení (např. CZ 30 % ± 5) a přechody; pokročilé váhy; verze a obnova.
+- **Schémata a mřížka** – pozice hudby s požadavky atributů, pevné tituly, imaging (i přes intro), reklama, voice track, zprávy, poznámky; pevné časy; týdenní mřížka, denní pásma, datované výjimky s prioritou; přechody času.
+- **Plán (editor)** – generování týdne na pozadí, hodiny s odhadem délky, alternativy se skóre a rozkladem, poslech, zámky, přesun, přegenerování hodiny, revize a porovnání, publikace s ochranou proti souběžné úpravě, ruční výjimky s důvodem v auditu.
+- **Atributy skladeb** – jazyk, lokální tvorba, energie, BPM, zpěv, nálada, známost, explicitnost, platnost, váha; návrhy s jistotou, hromadné změny s náhledem, import CSV, duplicity a verze.
+- **Analytika vysílání** – skutečnost / plán / srovnání, den–týden–měsíc, spiny, unikátní skladby a interpreti, podíly s jmenovatelem, top 10, Jaccard, opakování ve stejné hodině, energie během dne, soulad s formátem se skóre, detail skladby a interpreta s přesným sledem přehrání, stav rotace, CSV export.
+- As-played je idempotentní (replay se počítá jednou), odlišuje hlavní výstup od instantů a pamatuje si atributy v čase hraní.
+- Opravy: obsah dialogů a karet už nepřetéká (dlouhé názvy souborů), responzivní horní lišta.
+- Dokumentace `docs/selector.md` (architektura, matice požadavků, testy, výkon, zapnutí pro stanici).
+
+### Test 0.5.0
+1. Atributy skladeb → Doplnit návrhy; u pár skladeb nastavte jazyk a energii.
+2. Music Selector → Průvodce formátem → např. Hot AC → zmapujte kategorie → Zkontrolovat kapacitu → Simulovat týden → Použít.
+3. Plán (editor) → Vygenerovat týden → rozbalte hodinu → Nahradit skladbu z alternativ → Publikovat.
+4. Music Selector → Aktivní Selector → ve studiu má fronta důvod „Selector … (plán)“.
+5. Analytika vysílání → 7 dní; klikněte na skladbu v top 10 → detail se sledem přehrání.
+
+## Dříve (0.4.0)
 - **Složka stanice** – jedna složka pro celé rádio: Songs, Jingles, Spots … s podsložkami podle kategorií, automatická složka Import a Data (obrázky moderátorů, pořadů, obaly, obrázky ke spotům, nahrávky). Tlačítko Vytvořit strukturu složek, přehled složek s počty skladeb.
 - **Přesun složky stanice** na jiný disk / NAS – soubory se přesunou a cesty v databázi (skladby, obrázky, plán, historie) se přepíšou; předem se zazálohuje databáze.
 - **Automatická složka (Import)** – soubor nakopírovaný do Import/Typ/Kategorie se po dokopírování sám zařadí do knihovny i se značkami; chyby do Import/_Chyby s vysvětlením; protokol v nastavení.
@@ -30,13 +49,13 @@
 
 ## Instalace
 
-**macOS (Apple Silicon i Intel, macOS 11+)** – soubor `ORCA RadioAIR_0.4.0_universal.dmg`
+**macOS (Apple Silicon i Intel, macOS 11+)** – soubor `ORCA RadioAIR_0.5.0_universal.dmg`
 1. Otevřete DMG a přetáhněte ORCA RadioAIR do složky Aplikace.
 2. Aplikace zatím není podepsaná certifikátem Apple. Při prvním spuštění: pravým tlačítkem na aplikaci → Otevřít → Otevřít.
    Pokud macOS hlásí „je poškozená“, spusťte v Terminálu: `xattr -dr com.apple.quarantine "/Applications/ORCA RadioAIR.app"`
 3. Při prvním přehrávání / nahrávání povolte přístup k mikrofonu a zvuku, pokud se systém zeptá.
 
-**Windows 10/11 (64 bit)** – `ORCA RadioAIR_0.4.0_x64-setup.exe` (nebo `.msi`)
+**Windows 10/11 (64 bit)** – `ORCA RadioAIR_0.5.0_x64-setup.exe` (nebo `.msi`)
 1. Spusťte instalátor. SmartScreen: Další informace → Přesto spustit.
 2. Instaluje se pro všechny uživatele (vyžaduje oprávnění správce).
 

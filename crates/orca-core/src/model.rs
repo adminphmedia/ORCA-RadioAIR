@@ -205,6 +205,9 @@ pub struct QueueItem {
     /// Živý vstup: po plánované délce pokračovat automaticky (jinak čekat neomezeně)
     #[serde(default)]
     pub live_auto: bool,
+    /// Položka plánu ORCA Music Selector (vazba as-played → plán).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_item: Option<i64>,
 }
 
 impl QueueItem {
@@ -251,7 +254,7 @@ impl QueueItem {
     }
 
     pub fn new(track: Track, source: &str, reason: impl Into<String>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None, bed: None, live: false, live_auto: false }
+        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None, bed: None, live: false, live_auto: false, plan_item: None }
     }
 }
 

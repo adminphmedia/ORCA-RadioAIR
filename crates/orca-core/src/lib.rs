@@ -29,6 +29,7 @@ pub mod relay;
 pub mod reports;
 pub mod rotation;
 pub mod sched;
+pub mod selector;
 pub mod slides;
 pub mod spots;
 pub mod stitcher;

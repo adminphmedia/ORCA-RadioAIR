@@ -364,6 +364,29 @@ impl Automation {
                     Err(e) => log::error!("plán: {e}"),
                 }
             }
+            // ORCA Music Selector (aktivní): hudba z publikovaného plánu; bez plánu / po vyčerpání hodiny nouzově z clocků
+            if crate::selector::load_config(&self.db).map(|c| c.data.mode == "active").unwrap_or(false) {
+                match crate::selector::logs::take_next(&self.db, slot_time) {
+                    Ok(Some(crate::selector::logs::Next::Track { item_id, track_id, slot, reason })) => {
+                        if let Ok(Some(track)) = self.db.get_track(track_id) {
+                            if !track.missing {
+                                let mut item = QueueItem::new(track, "selector", reason);
+                                item.plan_item = Some(item_id);
+                                if slot.kind == "imaging" { item.position = slot.position.clone(); }
+                                self.engine.queue_push(item, None);
+                                continue;
+                            }
+                        }
+                        self.events.alert("warning", "selector_missing", format!("Položka plánu {item_id}: skladba {track_id} chybí – doplněno z clocku"));
+                    }
+                    Ok(Some(crate::selector::logs::Next::Stitch { kind, reason })) => {
+                        let est = match crate::stitcher::resolve(&self.db, &cfg, &kind, &q, slot_time) { Ok(p) => p.total_ms(), Err(_) => 0 };
+                        if est > 0 { self.engine.queue_push(crate::stitcher::queue_item(&kind, est, &reason), None); continue; }
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::error!("selector: {e}"),
+                }
+            }
             let Some(clock) = clock_for(&cfg, &slot_time) else { return };
             if clock.steps.is_empty() { return; }
             let key = format!("{}|{}", grid_key(&slot_time), clock.name);
@@ -409,7 +432,7 @@ impl Automation {
     fn on_event(&self, ev: Event) {
         match ev {
             Event::TrackStarted { item, channel } => {
-                match self.db.log_start(&item.track, &item.source, &item.reason) {
+                match self.db.log_start_ex(&item.track, &item.source, &item.reason, Some(&item.id), &channel, item.plan_item) {
                     Ok(id) => { self.log_ids.lock().insert(item.id.clone(), (id, Instant::now())); }
                     Err(e) => log::error!("log: {e}"),
                 }

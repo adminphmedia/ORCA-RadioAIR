@@ -251,6 +251,53 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE tracks ADD COLUMN outro_ms INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v9: ORCA Music Selector – hudební atributy, as-played rozšíření, dokumenty selektoru, plány (logy) s revizemi
+    r#"
+    ALTER TABLE play_log ADD COLUMN channel TEXT NOT NULL DEFAULT 'main';
+    ALTER TABLE play_log ADD COLUMN item_uid TEXT;
+    ALTER TABLE play_log ADD COLUMN plan_item_id INTEGER;
+    ALTER TABLE play_log ADD COLUMN origin TEXT NOT NULL DEFAULT 'engine';
+    ALTER TABLE play_log ADD COLUMN attrs TEXT NOT NULL DEFAULT '';
+    CREATE UNIQUE INDEX ix_log_uid ON play_log(item_uid) WHERE item_uid IS NOT NULL;
+    CREATE INDEX ix_log_track ON play_log(track_id, started_at);
+    CREATE TABLE music_attrs(
+        track_id INTEGER PRIMARY KEY,
+        work_key TEXT NOT NULL DEFAULT '',
+        artists TEXT NOT NULL DEFAULT '',
+        language TEXT NOT NULL DEFAULT '',
+        country TEXT NOT NULL DEFAULT '',
+        local INTEGER,
+        bpm REAL,
+        energy INTEGER,
+        mood TEXT NOT NULL DEFAULT '',
+        familiarity INTEGER,
+        explicit INTEGER,
+        gender TEXT NOT NULL DEFAULT '',
+        sound TEXT NOT NULL DEFAULT '',
+        custom TEXT NOT NULL DEFAULT '{}',
+        active_from TEXT NOT NULL DEFAULT '',
+        active_to TEXT NOT NULL DEFAULT '',
+        paused INTEGER NOT NULL DEFAULT 0,
+        weight REAL NOT NULL DEFAULT 1.0,
+        origin TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE music_aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL);
+    CREATE TABLE sel_docs(id TEXT PRIMARY KEY, data TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL DEFAULT '');
+    CREATE TABLE sel_doc_revisions(id INTEGER PRIMARY KEY, doc_id TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, at TEXT NOT NULL, user TEXT NOT NULL DEFAULT '');
+    CREATE TABLE sel_logs(
+        id INTEGER PRIMARY KEY, day TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, seed INTEGER NOT NULL DEFAULT 0,
+        config_version INTEGER NOT NULL DEFAULT 0, token INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT '',
+        published_at TEXT, stats TEXT NOT NULL DEFAULT '{}', note TEXT NOT NULL DEFAULT '', UNIQUE(day, revision)
+    );
+    CREATE TABLE sel_items(
+        id INTEGER PRIMARY KEY, log_id INTEGER NOT NULL REFERENCES sel_logs(id) ON DELETE CASCADE, hour_utc TEXT NOT NULL, hour_label TEXT NOT NULL,
+        clock TEXT NOT NULL DEFAULT '', pos INTEGER NOT NULL, slot TEXT NOT NULL DEFAULT '{}', track_id INTEGER, origin TEXT NOT NULL DEFAULT 'auto',
+        locked INTEGER NOT NULL DEFAULT 0, score REAL, breakdown TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', est_start TEXT NOT NULL DEFAULT '', length_ms INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX ix_sel_items_log ON sel_items(log_id, hour_utc, pos);
+    CREATE TABLE sel_consumed(day TEXT NOT NULL, hour_utc TEXT NOT NULL, pos INTEGER NOT NULL, at TEXT NOT NULL, PRIMARY KEY(day, hour_utc, pos));
+    "#,
 ];
 
 pub struct Db {
@@ -716,12 +763,21 @@ impl Db {
     }
 
     pub fn log_start(&self, t: &Track, source: &str, reason: &str) -> Result<i64> {
+        self.log_start_ex(t, source, reason, None, "main", None)
+    }
+
+    /// Zápis as-played. `uid` = id položky fronty: opakovaný start téže položky (restart, replay) se započte jednou.
+    pub fn log_start_ex(&self, t: &Track, source: &str, reason: &str, uid: Option<&str>, channel: &str, plan_item: Option<i64>) -> Result<i64> {
         let now = now_utc();
+        let attrs = if t.id > 0 { crate::selector::attrs_snapshot(self, t.id).unwrap_or_default() } else { String::new() };
         let c = self.conn.lock();
+        if let Some(u) = uid {
+            if let Ok(id) = c.query_row("SELECT id FROM play_log WHERE item_uid=?1", [u], |r| r.get::<_, i64>(0)) { return Ok(id); }
+        }
         c.execute(
-            "INSERT INTO play_log(track_id,kind,artist,title,album,path,category,isrc,composer,publisher,duration_ms,started_at,source,reason)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            params![if t.id > 0 { Some(t.id) } else { None }, t.kind().as_str(), t.artist, t.title, t.album, t.path, t.category, t.isrc, t.composer, t.publisher, t.duration_ms, now, source, reason],
+            "INSERT INTO play_log(track_id,kind,artist,title,album,path,category,isrc,composer,publisher,duration_ms,started_at,source,reason,item_uid,channel,plan_item_id,attrs)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+            params![if t.id > 0 { Some(t.id) } else { None }, t.kind().as_str(), t.artist, t.title, t.album, t.path, t.category, t.isrc, t.composer, t.publisher, t.duration_ms, now, source, reason, uid, channel, plan_item, attrs],
         )?;
         let id = c.last_insert_rowid();
         if t.id > 0 {
@@ -731,7 +787,7 @@ impl Db {
     }
 
     pub fn log_end(&self, log_id: i64, played_ms: i64) -> Result<()> {
-        self.conn.lock().execute("UPDATE play_log SET ended_at=?2, played_ms=?3 WHERE id=?1", params![log_id, now_utc(), played_ms])?;
+        self.conn.lock().execute("UPDATE play_log SET ended_at=?2, played_ms=MAX(COALESCE(played_ms,0), ?3) WHERE id=?1", params![log_id, now_utc(), played_ms])?;
         Ok(())
     }
 
