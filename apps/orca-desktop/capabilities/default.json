@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Výchozí oprávnění hlavního okna",
   "windows": ["main", "panel-*"],
-  "permissions": ["core:default", "dialog:default", "window-state:default"]
+  "permissions": ["core:default", "dialog:default", "window-state:default", "autostart:default"]
 }

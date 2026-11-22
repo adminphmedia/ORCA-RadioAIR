@@ -344,6 +344,9 @@ impl Engine {
         (f32::from_bits(self.meter_l.load(Ordering::Relaxed)), f32::from_bits(self.meter_r.load(Ordering::Relaxed)))
     }
 
+    /// Cesta po mapování složek (Obecná nastavení → mapování).
+    fn mp(&self, p: &str) -> PathBuf { PathBuf::from(crate::general::map_path(&self.cfg.read(), p)) }
+
     pub fn snapshot(&self) -> EngineStatus { self.status.read().clone() }
 
     fn try_open_output(&self) -> Option<OutputHandle> {
@@ -393,7 +396,7 @@ impl Engine {
                     item.track.title = plan.title.clone();
                     item.track.duration_ms = total; item.track.cue_in_ms = 0; item.track.mix_ms = total; item.track.cue_out_ms = total;
                     item.track.lufs = None; item.track.gain_db = 0.0;
-                    let segs = plan.segments.iter().map(|sg| (PathBuf::from(&sg.path), sg.start_ms, ms_f(sg.len_ms()))).collect();
+                    let segs = plan.segments.iter().map(|sg| (self.mp(&sg.path), sg.start_ms, ms_f(sg.len_ms()))).collect();
                     let v = Voice::new(item.clone(), Prefetch::start_segments(segs, rate), rate, 0.0, overlay);
                     let bed = plan.bed.map(|(sg, gain, len_ms)| {
                         let len_ms = len_ms.min(sg.len_ms());
@@ -401,7 +404,7 @@ impl Engine {
                         bt.title = "Stitcher – podkres".into(); bt.path = sg.path.clone(); bt.kind = Some(crate::model::TrackKind::Asset);
                         bt.cue_in_ms = sg.start_ms; bt.cue_out_ms = sg.start_ms + len_ms; bt.mix_ms = bt.cue_out_ms; bt.duration_ms = bt.cue_out_ms;
                         let bi = QueueItem::new(bt, "stitcher-bed", "podkres stitcheru");
-                        let mut bv = Voice::new(bi, Prefetch::start(PathBuf::from(&sg.path), sg.start_ms, ms_f(len_ms), rate), rate, gain as f64, true);
+                        let mut bv = Voice::new(bi, Prefetch::start(self.mp(&sg.path), sg.start_ms, ms_f(len_ms), rate), rate, gain as f64, true);
                         let fade = ms_f(800).min(bv.len);
                         bv.fade = Some(Fade { from: 1.0, to: 0.0, start: bv.len - fade, len: fade });
                         bv
@@ -427,7 +430,7 @@ impl Engine {
         let gain_db = item.track.playback_gain_db(normalize, target) + kind_trim.clamp(-12.0, 12.0);
         let (cue_in, _, cue_out) = item.track.effective_cues();
         let max_frames = ((cue_out - cue_in).max(0) as u64 * rate as u64) / 1000;
-        let src = preloaded.unwrap_or_else(|| Prefetch::start(PathBuf::from(&item.track.path), cue_in, max_frames, rate));
+        let src = preloaded.unwrap_or_else(|| Prefetch::start(self.mp(&item.track.path), cue_in, max_frames, rate));
         // krátké čekání na první data, aby začátek nebyl useknutý
         let t0 = Instant::now();
         while src.buffered_frames() < BLOCK * 4 && !src.done.load(Ordering::Acquire) && t0.elapsed() < Duration::from_millis(40) {
@@ -454,6 +457,7 @@ impl Engine {
     }
 
     fn mixer_loop(self: Arc<Self>, cmd_rx: Receiver<Cmd>) {
+        crate::general::boost_current_thread();
         let mut output = self.try_open_output();
         let mut last_reopen = Instant::now();
         let mut voices: Vec<Voice> = Vec::new();
@@ -796,7 +800,7 @@ impl Engine {
                 let rate = self.sample_rate();
                 let (cue_in, _, cue_out) = h.track.effective_cues();
                 let max_frames = ((cue_out - cue_in).max(0) as u64 * rate as u64) / 1000;
-                *preloaded = Some((h.id.clone(), Prefetch::start(PathBuf::from(&h.track.path), cue_in, max_frames, rate)));
+                *preloaded = Some((h.id.clone(), Prefetch::start(self.mp(&h.track.path), cue_in, max_frames, rate)));
             }
             (None, _) => *preloaded = None,
         }

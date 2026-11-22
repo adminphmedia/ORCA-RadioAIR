@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-autostart = "2"
 orca-core = { path = "../../crates/orca-core" }
 orca-server = { path = "../../crates/orca-server" }
 tokio = { version = "1", features = ["full"] }

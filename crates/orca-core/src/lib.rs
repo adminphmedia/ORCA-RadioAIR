@@ -14,7 +14,9 @@ pub mod epg;
 pub mod events;
 pub mod library;
 pub mod meta;
+pub mod general;
 pub mod model;
+pub mod monitor;
 pub mod nowplaying;
 pub mod processing;
 pub mod rds;
@@ -26,6 +28,7 @@ pub mod sched;
 pub mod slides;
 pub mod spots;
 pub mod stitcher;
+pub mod users;
 pub mod weather;
 
 use anyhow::Result;
@@ -61,6 +64,9 @@ pub struct Orca {
     pub meta: Arc<meta::MetaHub>,
     pub processing: Arc<processing::Processing>,
     pub window_hook: RwLock<Option<WindowHook>>,
+    pub general: Arc<general::General>,
+    pub users: users::Users,
+    pub monitor: monitor::Monitor,
 }
 
 impl Orca {
@@ -88,9 +94,11 @@ impl Orca {
         let processing = processing::Processing::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf());
         let meta = meta::MetaHub::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), data_dir.to_path_buf());
         if let Err(e) = library.start_watching() { events.alert("error", "watch_failed", e.to_string()); }
+        let general = general::General::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf(), automation.clone());
+        if cfg.read().general.keep_awake { general::keep_awake(); }
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None) }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default() }))
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).

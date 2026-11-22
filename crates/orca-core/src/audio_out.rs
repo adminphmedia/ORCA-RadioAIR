@@ -78,6 +78,7 @@ pub fn open_output(name: &str, want_rate: u32, buffer_ms: u32) -> Result<OutputH
     {
         let (failed, underruns, stop) = (failed.clone(), underruns.clone(), stop.clone());
         std::thread::Builder::new().name("orca-audio-out".into()).spawn(move || {
+            crate::general::boost_current_thread();
             let res = match sample_format {
                 SampleFormat::F32 => build::<f32>(&device, &config, channels, consumer, failed.clone(), underruns),
                 SampleFormat::I16 => build::<i16>(&device, &config, channels, consumer, failed.clone(), underruns),

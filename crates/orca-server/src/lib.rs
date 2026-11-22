@@ -26,6 +26,7 @@ pub(crate) type St = Arc<Orca>;
 pub(crate) type ApiResult = Result<Response, ApiError>;
 
 mod ext;
+mod general_api;
 mod plan;
 mod proc_api;
 
@@ -78,6 +79,8 @@ pub fn router(orca: St) -> Router {
         .merge(ext::routes())
         .merge(plan::routes())
         .merge(proc_api::routes())
+        .merge(general_api::routes())
+        .layer(middleware::from_fn_with_state(orca.clone(), general_api::perms))
         .layer(middleware::from_fn_with_state(orca.clone(), auth));
 
     let ui_dir = {

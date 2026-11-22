@@ -27,6 +27,7 @@ pub struct Config {
     pub schedule: ScheduleConfig,
     pub relay: RelayConfig,
     pub meta: MetaConfig,
+    pub general: GeneralConfig,
 }
 
 impl Default for Config {
@@ -48,6 +49,7 @@ impl Default for Config {
             schedule: ScheduleConfig::default(),
             relay: RelayConfig::default(),
             meta: MetaConfig::default(),
+            general: GeneralConfig::default(),
         }
     }
 }
@@ -118,6 +120,8 @@ pub struct AudioConfig {
     pub duck_db: f32,
     /// Zisk zdrojů podle typu (trim před mixem, dB) – skladby, reklamy, jingly…
     pub kind_trim_db: BTreeMap<TrackKind, f32>,
+    /// Předposlech (monitor / PFL) – samostatný výstup; prázdné = výchozí zařízení
+    pub monitor_device: String,
 }
 
 impl Default for AudioConfig {
@@ -133,6 +137,7 @@ impl Default for AudioConfig {
             target_lufs: -16.0,
             duck_db: -8.0,
             kind_trim_db: BTreeMap::new(),
+            monitor_device: String::new(),
         }
     }
 }
@@ -816,5 +821,104 @@ impl Default for DabConfig {
         Self { enabled: false, output_dir: PathBuf::new(), dls_rotation: vec!["song".into(), "show".into(), "next".into(), "weather".into()], dls_interval_s: 8, dl_plus: true,
             sls_enabled: true, sls_slides: vec!["cover".into(), "presenter".into(), "show".into(), "weather".into(), "station".into()], sls_width: 320, sls_height: 240, sls_max_kb: 50, sls_interval_s: 15,
             epg_enabled: true, ecc: "E2".into(), eid: "1001".into(), sid: "2001".into(), scids: 0, fm_freq: String::new(), public_url: String::new(), epg_days: 7, http_push: vec![] }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Obecná nastavení (Jazler General Settings)
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct FolderMapping { pub from: String, pub to: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmailConfig {
+    pub enabled: bool,
+    pub smtp_host: String,
+    pub port: u16,
+    /// starttls | tls | none
+    pub security: String,
+    pub username: String,
+    pub password: String,
+    pub from: String,
+    pub to: Vec<String>,
+    /// error | warning
+    pub min_level: String,
+    /// Stejné upozornění znovu nejdřív po (min)
+    pub repeat_min: u32,
+}
+impl Default for EmailConfig {
+    fn default() -> Self { Self { enabled: false, smtp_host: String::new(), port: 587, security: "starttls".into(), username: String::new(), password: String::new(), from: String::new(), to: vec![], min_level: "error".into(), repeat_min: 30 } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CustomLog {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub dir: PathBuf,
+    /// {DATE} = YYYY-MM-DD, {YYYY} {MM} {DD}
+    pub filename: String,
+    /// {DATE} {TIME} {ARTIST} {TITLE} {ALBUM} {DURATION} {DURATION_S} {KIND} {CATEGORY} {CODE} {ISRC} {COMPOSER} {PUBLISHER} {FILENAME} {SOURCE}
+    pub line: String,
+    pub header: String,
+    pub kinds: Vec<TrackKind>,
+}
+impl Default for CustomLog {
+    fn default() -> Self {
+        Self { id: uuid::Uuid::new_v4().to_string(), name: "Vlastní log".into(), enabled: false, dir: PathBuf::new(), filename: "log_{DATE}.txt".into(),
+            line: "{DATE};{TIME};{ARTIST};{TITLE};{DURATION};{KIND};{CODE}".into(), header: String::new(), kinds: vec![TrackKind::Song, TrackKind::Spot] }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SilenceConfig {
+    pub enabled: bool,
+    pub threshold_db: f32,
+    pub seconds: u32,
+    /// alert | next | playlist | relay
+    pub action: String,
+    pub playlist_id: Option<i64>,
+    pub relay_id: Option<String>,
+}
+impl Default for SilenceConfig { fn default() -> Self { Self { enabled: true, threshold_db: -50.0, seconds: 15, action: "next".into(), playlist_id: None, relay_id: None } } }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackupConfig { pub enabled: bool, pub dir: PathBuf, pub keep: u32, pub hour: u32 }
+impl Default for BackupConfig { fn default() -> Self { Self { enabled: true, dir: PathBuf::new(), keep: 14, hour: 4 } } }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneralConfig {
+    /// Spustit ORCA po přihlášení do systému
+    pub start_with_os: bool,
+    /// Vyžadovat přihlášení uživatele (role a oprávnění)
+    pub require_login: bool,
+    /// Automatické odhlášení po nečinnosti (min, 0 = nikdy)
+    pub auto_logout_min: u32,
+    pub folder_mappings: Vec<FolderMapping>,
+    pub email: EmailConfig,
+    pub custom_logs: Vec<CustomLog>,
+    pub silence: SilenceConfig,
+    pub backup: BackupConfig,
+    /// Mazat záznamy vysílání starší než (dní, 0 = nikdy)
+    pub log_retention_days: u32,
+    /// Externí audio editor (cesta k aplikaci)
+    pub editor_path: String,
+    /// Klávesové zkratky: akce → klávesa (např. "play" → "F1")
+    pub hotkeys: BTreeMap<String, String>,
+    /// Bránit uspání počítače a zvýšit prioritu vysílání
+    pub keep_awake: bool,
+}
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        let hk = [("play", "F1"), ("next", "F2"), ("pause", "F3"), ("stop", "F4"), ("stop_after", "F5"), ("loop", "F6"), ("restart", "F7"), ("mic", "F8"), ("stop_instants", "Escape"), ("auto", "F9"), ("manual", "F10")]
+            .into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        Self { start_with_os: false, require_login: false, auto_logout_min: 0, folder_mappings: vec![], email: EmailConfig::default(), custom_logs: vec![], silence: SilenceConfig::default(),
+            backup: BackupConfig::default(), log_retention_days: 0, editor_path: String::new(), hotkeys: hk, keep_awake: true }
     }
 }

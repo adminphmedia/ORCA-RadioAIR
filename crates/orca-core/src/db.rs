@@ -220,6 +220,10 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE TABLE audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL, user TEXT NOT NULL DEFAULT '', action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
     "#,
+    // v5: uživatelé a oprávnění
+    r#"
+    CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL, pin_hash TEXT NOT NULL DEFAULT '', perms TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, last_login TEXT);
+    "#,
 ];
 
 pub struct Db {

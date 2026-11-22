@@ -11,8 +11,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 fn keep_awake() {
     // Vysílací software nesmí usnout: vypnout App Nap a zabránit uspání systému, dokud aplikace běží.
     let _ = std::process::Command::new("defaults").args(["write", "cz.orca.radioair", "NSAppSleepDisabled", "-bool", "YES"]).status();
-    let pid = std::process::id().to_string();
-    let _ = std::process::Command::new("caffeinate").args(["-i", "-s", "-w", &pid]).spawn();
+    // caffeinate a prioritu nastavuje orca-core (general::keep_awake) podle Obecných nastavení
 }
 #[cfg(not(target_os = "macos"))]
 fn keep_awake() {}
@@ -24,6 +23,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .setup(|app| {
             // přibalené zdroje: ffmpeg a UI
             if let Ok(res) = app.path().resource_dir() {
@@ -36,6 +36,23 @@ fn main() {
             let orca = orca_core::Orca::start(&data_dir).map_err(|e| e.to_string())?;
             let bind = orca.cfg.read().api.bind.clone();
             app.manage(orca.clone());
+
+            // spouštění se systémem – synchronizace s Obecnými nastaveními
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let handle = app.handle().clone();
+                let sync = move |want: bool| {
+                    let al = handle.autolaunch();
+                    let is = al.is_enabled().unwrap_or(false);
+                    if want && !is { if let Err(e) = al.enable() { log::warn!("autostart: {e}"); } }
+                    if !want && is { let _ = al.disable(); }
+                };
+                sync(orca.cfg.read().general.start_with_os);
+                let (rx, cfg) = (orca.events.subscribe(), orca.cfg.clone());
+                std::thread::Builder::new().name("orca-autostart".into()).spawn(move || {
+                    while let Ok(ev) = rx.recv() { if matches!(ev, orca_core::events::Event::ConfigChanged) { sync(cfg.read().general.start_with_os); } }
+                })?;
+            }
 
             // API server ve vlastním tokio runtime
             let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
