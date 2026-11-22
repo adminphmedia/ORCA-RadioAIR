@@ -1,6 +1,26 @@
-# ORCA RadioAIR 0.5.0 – testovací verze
+# ORCA RadioAIR 0.6.0 – testovací verze
 
-## Novinky v 0.5.0
+## Novinky v 0.6.0
+- **Automatická analýza BPM a energie** – Atributy skladeb → Analyzovat BPM a energii: tempo a energie 1–5 z poslechu souboru, na pozadí, ruční a importované hodnoty se nepřepíší.
+- **Twofer, tematické bloky a sady skladeb** – dvě skladby stejného interpreta za sebou, bloky se společným tématem, pevně vybrané sady (výročí, speciály) jako pozice ve schématu.
+- **Obrácená a posunutá rotace** – skladby se nevracejí do stejných hodin; odhad kapacity upozorní, když obrat „sedí“ na 24 h.
+- **Automatické jingly podle skladby** – např. jingle před každou českou skladbou nebo sweeper přes intro energického hitu; limit za hodinu a odstup; po výměně skladby v editoru se přepočítají; nerozdělí twofer ani sadu.
+- **Kategorie podle denní doby** – v daném pásmu (noc) se místo kategorie bere jiná.
+- **Samostatné oprávnění na publikaci** – role Hudební ředitel; editor plán upraví, ale nepublikuje (stávajícím editorům se oprávnění zachovalo).
+- **Hlášení OSA / INTERGRAM** – kontrola úplnosti za měsíc s termínem odevzdání, doplnění údajů přímo u skladby, export CSV podle upravitelné šablony (UTF-8 / Windows-1250). Nová pole skladby Autor textu a Značka výrobce (načítají se i z tagů a importu).
+- **Moderátorská časová osa** ve studiu – zvuková křivka, zóny intro / zpěv / outro, značky a velký pruh „co teď“ s odpočtem; intro další položky.
+- **Barvy kategorií** – řádky v deckách i playlistech mají podklad v barvě kategorie a ikonu v plné barvě; kategorie bez barvy dostanou automatickou.
+- **Logo stanice** vlevo v horní liště studia.
+- Ovládací panel: výraznější nadpisy skupin menu; nápověda každé části začíná laickým vysvětlením „Jednoduše řečeno“.
+
+### Test 0.6.0
+1. Atributy skladeb → Analyzovat BPM a energii → po dokončení zkontrolujte sloupce Energie a BPM.
+2. Nastavení formátu → Automatické jingly podle skladby → pravidlo Jazyk = cs, jingle před skladbou → Plán (editor) → Vygenerovat → v hodinách je „jingle podle skladby“.
+3. Schémata → hudební pozice → Twofer; tlačítko Tematický blok.
+4. Uživatelé → role Editor / dramaturg nemůže publikovat, Hudební ředitel ano.
+5. Hlášení OSA / INTERGRAM → minulý měsíc → Doplnit chybějící údaje → Stáhnout CSV.
+
+## Dříve (0.5.0)
 - **ORCA Music Selector** – profesionální plánování hudby vedle jednoduchých clocků (Jazler): režimy Jednoduché / Stínový provoz / Aktivní (vratné, bez plánu nouzově z clocků).
 - **Průvodce formátem** – 20 formátů (CHR, CHR – ENERGIC CZ, Hot / Mainstream / Soft AC, Adult Hits, Classic Hits, Classic Rock, Alternative/AAA, Dance, Hip-hop/R&B, Urban AC, Country, Jazz, Klasika, World/Folk, Latin, News/Talk, Vánoce): mapování na kategorie, kontrola kapacity (obrat, proveditelnost odstupů), simulace týdne bez zápisu, použití jako verze.
 - **Pravidla formátu** jako věty: odstup skladby, interpreta (i hostujícího), verzí téže písně, alba, stejné hodiny, maxima za den, explicitní obsah podle hodin, max. stejných hodnot za sebou, energie; cíle zastoupení (např. CZ 30 % ± 5) a přechody; pokročilé váhy; verze a obnova.

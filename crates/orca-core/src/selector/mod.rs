@@ -12,6 +12,7 @@
 //! `active` (automatika bere hudbu z publikovaného plánu; bez plánu nouzově z clocků).
 
 pub mod analytics;
+pub mod audiofeat;
 pub mod attrs;
 pub mod generator;
 pub mod logs;
@@ -44,10 +45,12 @@ pub struct SelCategory {
     /// Rychlost rotace: fast | normal | slow (ovlivňuje cílový obrat).
     pub rotation: String,
     pub color: String,
+    /// Alternativní kategorie podle denního pásma: název pásma → kategorie (např. Večer: Power → Power Chill).
+    pub daypart_alt: BTreeMap<String, String>,
 }
 
 impl Default for SelCategory {
-    fn default() -> Self { Self { name: String::new(), kind: TrackKind::Song, role: "current".into(), pass: 5, fallback: String::new(), rotation: "normal".into(), color: String::new() } }
+    fn default() -> Self { Self { name: String::new(), kind: TrackKind::Song, role: "current".into(), pass: 5, fallback: String::new(), rotation: "normal".into(), color: String::new(), daypart_alt: BTreeMap::new() } }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -151,9 +154,15 @@ pub struct Slot {
     pub stitch: Option<String>,
     /// Odhad délky zástupné pozice v sekundách (reklama, zprávy, moderace) – pro výpočet průběhu hodiny.
     pub est_s: Option<u32>,
+    /// Twofer: tato a následující hudební pozice = dvě skladby stejného interpreta (výjimka z odstupu jen pro tuto dvojici).
+    pub twofer: bool,
+    /// Tematický blok: pozice se stejným tématem tvoří blok – uvnitř neplatí „max. stejných za sebou“ a přechody.
+    pub theme: String,
+    /// Pozice typu „set“: název sady skladeb (rozvine se na skladby sady).
+    pub set: String,
 }
 impl Default for Slot {
-    fn default() -> Self { Self { kind: "music".into(), category: String::new(), track_id: None, track_kind: None, attrs: BTreeMap::new(), label: String::new(), at_min: None, optional: false, position: None, stitch: None, est_s: None } }
+    fn default() -> Self { Self { kind: "music".into(), category: String::new(), track_id: None, track_kind: None, attrs: BTreeMap::new(), label: String::new(), at_min: None, optional: false, position: None, stitch: None, est_s: None, twofer: false, theme: String::new(), set: String::new() } }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -168,6 +177,34 @@ pub struct Daypart { pub name: String, pub from_hour: u32, pub to_hour: u32 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct GridException { pub name: String, pub date_from: String, pub date_to: String, pub from_hour: u32, pub to_hour: u32, pub clock: String, pub priority: i32 }
+
+/// Sada skladeb (blok se zachovaným pořadím – např. celé dílo, tematický set).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct TrackSet { pub name: String, pub track_ids: Vec<i64>, pub keep_order: bool, pub note: String }
+
+/// Linker – cílené automatické vložení imagingu podle vlastností skladby (jingle před českou skladbou,
+/// hlasový sweeper přes intro energického hitu …).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Linker {
+    pub name: String,
+    pub enabled: bool,
+    /// Podmínky na skladbu: atribut → požadavek ("language": "cs", "energy": ">=4", "category": "Power")
+    pub when: BTreeMap<String, String>,
+    /// before | after | over_intro
+    pub position: String,
+    pub track_kind: TrackKind,
+    pub category: String,
+    pub max_per_hour: u32,
+    /// Stejný imaging nejdříve za (min)
+    pub min_gap_min: u32,
+    /// Přes intro jen u skladeb s intrem aspoň (ms)
+    pub min_intro_ms: i64,
+}
+impl Default for Linker {
+    fn default() -> Self { Self { name: String::new(), enabled: true, when: BTreeMap::new(), position: "before".into(), track_kind: TrackKind::Jingle, category: String::new(), max_per_hour: 2, min_gap_min: 60, min_intro_ms: 6000 } }
+}
 
 /// Kvalifikace „spinu“ pro analytiku: hraní se počítá, pokud trvalo aspoň min_ms nebo min_pct délky.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -206,6 +243,11 @@ pub struct SelectorConfig {
     pub week_start: u32,
     /// Typ pro analytiku „hudba“.
     pub music_kinds: Vec<TrackKind>,
+    pub sets: Vec<TrackSet>,
+    pub linkers: Vec<Linker>,
+    /// Rozložení rotace: standard | reverse (každý druhý den se plní od konce dne) | shift (začátek se denně posouvá o `shift_hours`)
+    pub rotation_pattern: String,
+    pub shift_hours: u32,
 }
 
 impl Default for SelectorConfig {
@@ -219,13 +261,18 @@ impl Default for SelectorConfig {
                 Daypart { name: "Večer".into(), from_hour: 19, to_hour: 24 },
             ],
             exceptions: vec![], seed: 1, variants: 4, max_candidates: 400, qualify: Qualify::default(), protect_min: 10, week_start: 1,
-            music_kinds: vec![TrackKind::Song],
+            music_kinds: vec![TrackKind::Song], sets: vec![], linkers: vec![], rotation_pattern: "standard".into(), shift_hours: 5,
         }
     }
 }
 
 impl SelectorConfig {
     pub fn category(&self, name: &str) -> Option<&SelCategory> { self.categories.iter().find(|c| c.name == name) }
+    /// Kategorie pro pozici v dané hodině (alternativa podle denního pásma).
+    pub fn effective_category(&self, name: &str, hour: u32) -> String {
+        let dp = self.daypart_of(hour).map(|d| d.name.clone()).unwrap_or_default();
+        self.category(name).and_then(|c| c.daypart_alt.get(&dp)).filter(|x| !x.is_empty()).cloned().unwrap_or_else(|| name.to_string())
+    }
     pub fn clock(&self, name: &str) -> Option<&SelClock> { self.clocks.iter().find(|c| c.name == name) }
     pub fn daypart_of(&self, hour: u32) -> Option<&Daypart> {
         self.dayparts.iter().find(|d| if d.from_hour <= d.to_hour { hour >= d.from_hour && hour < d.to_hour } else { hour >= d.from_hour || hour < d.to_hour })
@@ -317,5 +364,19 @@ pub fn describe_rules(r: &Rules) -> Vec<String> {
     for (f, t) in &r.explicit_forbidden { v.push(format!("Explicitní skladby nehrají mezi {f}:00 a {t}:00.")); }
     if r.energy_max_jump > 0 { v.push(format!("Energie sousedních skladeb se liší nejvýše o {}.", r.energy_max_jump)); }
     if r.protect_drive_times { v.push("Skladba nehraje ráno i odpoledne ve špičce téhož dne.".into()); }
+    v
+}
+
+/// Popis pravidel včetně vzoru rotace (pro náhled konfigurace).
+pub fn describe_config(c: &SelectorConfig) -> Vec<String> {
+    let mut v = describe_rules(&c.rules);
+    match c.rotation_pattern.as_str() {
+        "reverse" => v.push("Rotace se střídá: liché dny procházejí kategorie v obráceném pořadí (skladby se nevracejí do stejných hodin).".into()),
+        "shift" => v.push(format!("Rotace se každý den posouvá o {} h (skladby se nevracejí do stejných hodin).", c.shift_hours)),
+        _ => {}
+    }
+    let n = c.linkers.iter().filter(|l| l.enabled).count();
+    if n > 0 { v.push(format!("Automatické jingly podle vlastností skladby (počet pravidel: {n}).")); }
+    if !c.sets.is_empty() { v.push(format!("Tematické sady skladeb (počet: {}).", c.sets.len())); }
     v
 }

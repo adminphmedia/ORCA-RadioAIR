@@ -308,7 +308,8 @@ pub fn station_report(cfg: &SelectorConfig, spins: &[Spin], from: NaiveDate, to:
     r.same_hour = shv.iter().take(15).map(|((id, h), ds)| format!("Ve všední dny se „{}“ v {:02}:00–{:02}:00 objevil {}× z {} dnů.", names.get(id).cloned().unwrap_or_default(), h, (h + 1) % 24, ds.len(), weekdays.len())).collect();
     // opakované dvojice za sebou
     let mut pairs: HashMap<(i64, i64), usize> = HashMap::new();
-    for w in qual.windows(2) { if let (Some(x), Some(y)) = (w[0].track_id, w[1].track_id) { *pairs.entry((x, y)).or_default() += 1; } }
+    // dvojice téhož interpreta (twofer) jsou záměr, ne chyba rotace
+    for w in qual.windows(2) { if w[0].artist == w[1].artist { continue; } if let (Some(x), Some(y)) = (w[0].track_id, w[1].track_id) { *pairs.entry((x, y)).or_default() += 1; } }
     let title = |id: i64| qual.iter().find(|s| s.track_id == Some(id)).map(|s| format!("{} – {}", s.artist, s.title)).unwrap_or_default();
     let mut pv: Vec<_> = pairs.into_iter().filter(|x| x.1 > 1).collect();
     pv.sort_by(|x, y| y.1.cmp(&x.1));

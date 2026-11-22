@@ -298,6 +298,16 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX ix_sel_items_log ON sel_items(log_id, hour_utc, pos);
     CREATE TABLE sel_consumed(day TEXT NOT NULL, hour_utc TEXT NOT NULL, pos INTEGER NOT NULL, at TEXT NOT NULL, PRIMARY KEY(day, hour_utc, pos));
     "#,
+    // v10: údaje pro hlášení kolektivním správcům (OSA – autoři textu, INTERGRAM/OSA – značka výrobce)
+    r#"
+    ALTER TABLE tracks ADD COLUMN lyricist TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tracks ADD COLUMN label TEXT NOT NULL DEFAULT '';
+    ALTER TABLE play_log ADD COLUMN lyricist TEXT NOT NULL DEFAULT '';
+    ALTER TABLE play_log ADD COLUMN label TEXT NOT NULL DEFAULT '';
+    -- publikace plánů je nově samostatné oprávnění; dosavadní editoři ho zachovají (správce ho může odebrat)
+    UPDATE users SET perms = CASE WHEN perms IN ('', '[]') THEN '["publish"]' ELSE substr(perms, 1, length(perms) - 1) || ',"publish"]' END
+        WHERE role = 'editor' AND perms NOT LIKE '%"publish"%';
+    "#,
 ];
 
 pub struct Db {
@@ -342,6 +352,8 @@ pub struct ScannedFile {
     pub isrc: String,
     pub composer: String,
     pub publisher: String,
+    pub lyricist: String,
+    pub label: String,
     pub file_mtime: i64,
     pub file_size: i64,
 }
@@ -383,6 +395,8 @@ pub struct TrackPatch {
     pub bed_level_db: Option<f64>,
     pub bed_fade_ms: Option<i64>,
     pub outro_ms: Option<i64>,
+    pub lyricist: Option<String>,
+    pub label: Option<String>,
 }
 
 /// Rozliší chybějící pole (None) od explicitního null (Some(None)).
@@ -394,7 +408,7 @@ where D: serde::Deserializer<'de>, T: Deserialize<'de> {
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryCount { pub kind: String, pub category: String, pub count: i64 }
 
-pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked,bed_intro_ms,bed_outro_ms,bed_level_db,bed_fade_ms,outro_ms";
+pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked,bed_intro_ms,bed_outro_ms,bed_level_db,bed_fade_ms,outro_ms,lyricist,label";
 
 pub fn row_track(r: &Row) -> rusqlite::Result<Track> {
     let kind: String = r.get(1)?;
@@ -444,6 +458,8 @@ pub fn row_track(r: &Row) -> rusqlite::Result<Track> {
         bed_level_db: r.get(42)?,
         bed_fade_ms: r.get(43)?,
         outro_ms: r.get(44)?,
+        lyricist: r.get(45)?,
+        label: r.get(46)?,
     })
 }
 
@@ -577,18 +593,19 @@ impl Db {
                 c.execute(
                     "UPDATE tracks SET kind=?2, artist=?3, title=?4, album=?5, year=?6, genre=?7, duration_ms=?8, isrc=?9, composer=?10, publisher=?11,
                      file_mtime=?12, file_size=?13, missing=0, analyzed=CASE WHEN manual_cues=1 THEN analyzed ELSE 0 END, updated_at=?14,
-                     category=CASE WHEN category='' THEN ?15 ELSE category END
+                     category=CASE WHEN category='' THEN ?15 ELSE category END,
+                     lyricist=CASE WHEN lyricist='' THEN ?16 ELSE lyricist END, label=CASE WHEN label='' THEN ?17 ELSE label END
                      WHERE id=?1",
-                    params![id, f.kind.as_str(), f.artist, f.title, f.album, f.year, f.genre, f.duration_ms, f.isrc, f.composer, f.publisher, f.file_mtime, f.file_size, now, f.category],
+                    params![id, f.kind.as_str(), f.artist, f.title, f.album, f.year, f.genre, f.duration_ms, f.isrc, f.composer, f.publisher, f.file_mtime, f.file_size, now, f.category, f.lyricist, f.label],
                 )?;
                 Ok(UpsertResult::Updated(id))
             }
             None => {
                 let seq: i64 = rand::random::<u32>() as i64;
                 c.execute(
-                    "INSERT INTO tracks(kind,path,filename,artist,title,album,year,genre,category,duration_ms,cue_out_ms,mix_ms,isrc,composer,publisher,file_mtime,file_size,added_at,updated_at,rotation_seq)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?10,?11,?12,?13,?14,?15,?16,?16,?17)",
-                    params![f.kind.as_str(), f.path, f.filename, f.artist, f.title, f.album, f.year, f.genre, f.category, f.duration_ms, f.isrc, f.composer, f.publisher, f.file_mtime, f.file_size, now, seq],
+                    "INSERT INTO tracks(kind,path,filename,artist,title,album,year,genre,category,duration_ms,cue_out_ms,mix_ms,isrc,composer,publisher,file_mtime,file_size,added_at,updated_at,rotation_seq,lyricist,label)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?10,?11,?12,?13,?14,?15,?16,?16,?17,?18,?19)",
+                    params![f.kind.as_str(), f.path, f.filename, f.artist, f.title, f.album, f.year, f.genre, f.category, f.duration_ms, f.isrc, f.composer, f.publisher, f.file_mtime, f.file_size, now, seq, f.lyricist, f.label],
                 )?;
                 Ok(UpsertResult::Inserted(c.last_insert_rowid()))
             }
@@ -689,7 +706,7 @@ impl Db {
         set!(playlister_code, "playlister_code"); set!(isrc, "isrc"); set!(composer, "composer"); set!(publisher, "publisher");
         set!(cue_in_ms, "cue_in_ms"); set!(intro_ms, "intro_ms"); set!(mix_ms, "mix_ms"); set!(cue_out_ms, "cue_out_ms");
         set!(vocal, "vocal"); set!(properties, "properties"); set!(color, "color"); set!(comment, "comment");
-        set!(bed_intro_ms, "bed_intro_ms"); set!(bed_outro_ms, "bed_outro_ms"); set!(bed_level_db, "bed_level_db"); set!(bed_fade_ms, "bed_fade_ms"); set!(outro_ms, "outro_ms");
+        set!(bed_intro_ms, "bed_intro_ms"); set!(bed_outro_ms, "bed_outro_ms"); set!(bed_level_db, "bed_level_db"); set!(bed_fade_ms, "bed_fade_ms"); set!(outro_ms, "outro_ms"); set!(lyricist, "lyricist"); set!(label, "label");
         if let Some(sep) = &p.separation_min { tx.execute("UPDATE tracks SET separation_min=?2 WHERE id=?1", params![id, sep])?; }
         if let Some(b) = p.bookmarked { tx.execute("UPDATE tracks SET bookmarked=?2 WHERE id=?1", params![id, b as i64])?; }
         if let Some(e) = p.enabled { tx.execute("UPDATE tracks SET enabled=?2 WHERE id=?1", params![id, e as i64])?; }
@@ -775,9 +792,9 @@ impl Db {
             if let Ok(id) = c.query_row("SELECT id FROM play_log WHERE item_uid=?1", [u], |r| r.get::<_, i64>(0)) { return Ok(id); }
         }
         c.execute(
-            "INSERT INTO play_log(track_id,kind,artist,title,album,path,category,isrc,composer,publisher,duration_ms,started_at,source,reason,item_uid,channel,plan_item_id,attrs)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-            params![if t.id > 0 { Some(t.id) } else { None }, t.kind().as_str(), t.artist, t.title, t.album, t.path, t.category, t.isrc, t.composer, t.publisher, t.duration_ms, now, source, reason, uid, channel, plan_item, attrs],
+            "INSERT INTO play_log(track_id,kind,artist,title,album,path,category,isrc,composer,publisher,duration_ms,started_at,source,reason,item_uid,channel,plan_item_id,attrs,lyricist,label)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            params![if t.id > 0 { Some(t.id) } else { None }, t.kind().as_str(), t.artist, t.title, t.album, t.path, t.category, t.isrc, t.composer, t.publisher, t.duration_ms, now, source, reason, uid, channel, plan_item, attrs, t.lyricist, t.label],
         )?;
         let id = c.last_insert_rowid();
         if t.id > 0 {

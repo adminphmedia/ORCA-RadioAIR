@@ -451,7 +451,7 @@ pub fn parse_playlist(text: &str) -> Table {
 pub const FIELDS: &[&str] = &[
     "path", "filename", "artist", "title", "album", "year", "genre", "category", "category2", "kind", "duration",
     "cue_in", "intro", "outro", "mix", "cue_out", "fade_out", "hook_in", "hook_out", "cue_string",
-    "gain", "isrc", "composer", "publisher", "comment", "code", "enabled",
+    "gain", "isrc", "composer", "lyricist", "label", "publisher", "comment", "code", "enabled",
 ];
 
 /// Synonyma názvů sloupců (normalizovaná: malá písmena, bez diakritiky, mezer a podtržítek).
@@ -480,7 +480,9 @@ fn synonyms(field: &str) -> &'static [&'static str] {
         "gain" => &["gain", "replaygain", "gaindb", "volume", "trackgain"],
         "isrc" => &["isrc"],
         "composer" => &["composer", "skladatel", "writer", "composers", "author"],
-        "publisher" => &["publisher", "label", "vydavatel", "recordlabel"],
+        "lyricist" => &["lyricist", "lyricists", "lyrics", "textar", "autortextu", "autorislov", "lyricwriter", "textari"],
+        "label" => &["label", "recordlabel", "znacka", "znackavyrobce", "vyrobce", "producer", "labelname"],
+        "publisher" => &["publisher", "vydavatel", "nakladatel", "musicpublisher"],
         "comment" => &["comment", "comments", "poznamka", "notes", "note", "memo"],
         "code" => &["code", "cartid", "cutid", "cart", "kod", "playlistercode", "externalid"],
         "enabled" => &["enabled", "active", "aktivni", "isenabled"],
@@ -601,6 +603,8 @@ pub struct ImportRow {
     pub gain_db: Option<f64>,
     pub isrc: String,
     pub composer: String,
+    pub lyricist: String,
+    pub label: String,
     pub publisher: String,
     pub comment: String,
     pub code: String,
@@ -762,6 +766,8 @@ fn row_from_table(o: &ImportOptions, headers: &[String], r: &[String], line: usi
     row.gain_db = num(&col("gain"));
     row.isrc = col("isrc");
     row.composer = col("composer");
+    row.lyricist = col("lyricist");
+    row.label = col("label");
     row.publisher = col("publisher");
     row.comment = col("comment");
     row.code = col("code");
@@ -795,7 +801,7 @@ fn rows_from_folder(o: &ImportOptions) -> Result<Vec<ImportRow>> {
         match library::read_file(p, &wf) {
             Ok(f) => {
                 row.artist = f.artist; row.title = f.title; row.album = f.album; row.genre = f.genre; row.year = f.year;
-                row.isrc = f.isrc; row.composer = f.composer; row.publisher = f.publisher; row.category = f.category;
+                row.isrc = f.isrc; row.composer = f.composer; row.publisher = f.publisher; row.lyricist = f.lyricist; row.label = f.label; row.category = f.category;
                 row.duration_ms = Some(f.duration_ms).filter(|d| *d > 0);
             }
             Err(err) => row.warnings.push(err.to_string()),
@@ -921,7 +927,7 @@ pub fn patch_for(r: &ImportRow, overwrite: bool) -> TrackPatch {
     let s = |v: &String| if v.is_empty() { None } else { Some(v.clone()) };
     let m = &r.markers;
     let mut p = TrackPatch {
-        album: s(&r.album), genre: s(&r.genre), category2: s(&r.category2), isrc: s(&r.isrc), composer: s(&r.composer),
+        album: s(&r.album), genre: s(&r.genre), category2: s(&r.category2), isrc: s(&r.isrc), composer: s(&r.composer), lyricist: s(&r.lyricist), label: s(&r.label),
         publisher: s(&r.publisher), comment: s(&r.comment), playlister_code: s(&r.code), year: r.year, enabled: r.enabled,
         gain_db: r.gain_db.filter(|g| g.abs() < 30.0),
         cue_in_ms: m.cue_in_ms, intro_ms: m.intro_ms, outro_ms: m.outro_ms, mix_ms: m.mix_ms, cue_out_ms: m.cue_out_ms,

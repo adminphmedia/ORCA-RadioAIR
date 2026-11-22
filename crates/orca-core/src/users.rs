@@ -16,7 +16,8 @@ pub const PERMS: &[&str] = &[
     "studio",      // ovládání vysílání (play/next/stop, fronta, instanty, znělky)
     "library",     // úpravy knihovny, import, mazání skladeb
     "spots",       // reklama: kampaně, spoty, bloky
-    "schedule",    // plánování, playlisty, události, pořady
+    "schedule",    // plánování, playlisty, události, pořady, úpravy plánu Music Selectoru
+    "publish",     // publikace plánu Music Selectoru (koncept → vysílání)
     "broadcast",   // výstupy, streamy, převzaté vysílání, metadata, RDS/DAB
     "processing",  // zvukový processing
     "reports",     // reporty a logy
@@ -27,6 +28,7 @@ pub const PERMS: &[&str] = &[
 pub fn role_perms(role: &str) -> Vec<String> {
     let p: &[&str] = match role {
         "admin" => PERMS,
+        "director" => &["studio", "library", "spots", "schedule", "publish", "reports"],
         "editor" => &["studio", "library", "spots", "schedule", "reports"],
         "presenter" => &["studio"],
         "viewer" => &[],
@@ -87,7 +89,7 @@ impl Users {
     pub fn save(&self, db: &Db, u: &User, pin: Option<&str>) -> Result<i64> {
         let name = u.name.trim();
         if name.is_empty() { return Err(anyhow!("zadejte jméno")); }
-        if !["admin", "editor", "presenter", "viewer"].contains(&u.role.as_str()) { return Err(anyhow!("neznámá role {}", u.role)); }
+        if !["admin", "director", "editor", "presenter", "viewer"].contains(&u.role.as_str()) { return Err(anyhow!("neznámá role {}", u.role)); }
         let perms = serde_json::to_string(&u.perms.iter().filter(|p| PERMS.contains(&p.as_str())).collect::<Vec<_>>())?;
         // poslední aktivní administrátor nesmí přijít o roli
         if u.id > 0 && (u.role != "admin" || !u.enabled) {
@@ -154,6 +156,7 @@ pub fn required_perm(method: &str, path: &str) -> Option<&'static str> {
     let write = method != "GET" && method != "HEAD";
     let pick = |prefixes: &[&str]| prefixes.iter().any(|x| p.starts_with(x));
     if pick(&["/users"]) { return Some("users"); }
+    if write && p.starts_with("/selector/logs/") && p.ends_with("/publish") { return Some("publish"); }
     if p.starts_with("/session") || p.starts_with("/manual") || p.starts_with("/ui/") { return None; }
     if !write { return None; }
     if pick(&["/transport", "/gpio", "/queue", "/instants", "/pads", "/mode", "/monitor", "/memos", "/record"]) { return Some("studio"); }
@@ -176,6 +179,9 @@ mod tests {
         assert_eq!(required_perm("PUT", "/api/config"), Some("settings"));
         assert_eq!(required_perm("GET", "/api/users"), Some("users"));
         assert!(role_perms("presenter").contains(&"studio".to_string()));
+        assert_eq!(required_perm("POST", "/api/selector/logs/5/publish"), Some("publish"));
+        assert_eq!(required_perm("POST", "/api/selector/logs/5/edit"), Some("schedule"));
+        assert!(!role_perms("editor").contains(&"publish".to_string()));
         assert!(!role_perms("presenter").contains(&"settings".to_string()));
     }
 }

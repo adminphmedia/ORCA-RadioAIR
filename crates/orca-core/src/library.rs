@@ -65,6 +65,8 @@ pub fn read_file(path: &Path, wf: &WatchFolder) -> Result<ScannedFile> {
                 f.isrc = tag.get_string(&ItemKey::Isrc).or_else(|| tag.get_string(&ItemKey::Unknown("ISRC".into()))).unwrap_or_default().to_string();
                 f.composer = tag.get_string(&ItemKey::Composer).unwrap_or_default().to_string();
                 f.publisher = tag.get_string(&ItemKey::Publisher).or_else(|| tag.get_string(&ItemKey::Label)).unwrap_or_default().to_string();
+                f.lyricist = tag.get_string(&ItemKey::Lyricist).unwrap_or_default().to_string();
+                f.label = tag.get_string(&ItemKey::Label).or_else(|| tag.get_string(&ItemKey::Publisher)).unwrap_or_default().to_string();
             }
         }
         Err(e) => log::warn!("tagy nelze přečíst {}: {e}", path.display()),

@@ -184,6 +184,8 @@ pub struct Ctx<'a> {
     ledger: Ledger,
     /// Skladby, kterým se při přegenerování vyhnout (jiná varianta) – poloviční skóre.
     pub avoid: std::collections::HashSet<i64>,
+    /// Twofer: druhá skladba musí sdílet interpreta s první.
+    pub require_artist: Option<Vec<String>>,
 }
 
 pub const R_SONG: &str = "Odstup skladby";
@@ -202,6 +204,7 @@ pub const R_DRIVE: &str = "Hraje už v jiné špičce dne";
 pub const R_INACTIVE: &str = "Neaktivní / pozastavená / chybí soubor";
 pub const R_GOAL: &str = "Závazný cíl zastoupení";
 pub const R_INTRO: &str = "Krátké intro pro hlasový sweeper";
+pub const R_TWOFER: &str = "Twofer: jiný interpret";
 
 const MIN: i64 = 60_000;
 
@@ -222,7 +225,7 @@ impl<'a> Ctx<'a> {
             (c, (n / 168.0, a))
         }).collect();
         let goals = cfg.goals.iter().map(|g| (g.attr.clone(), g.value.to_lowercase())).collect();
-        Self { cfg, tracks: tracks.iter().map(|t| (t.id, t)).collect(), pools, cat_rate, goals, ledger: Ledger::default(), avoid: Default::default() }
+        Self { cfg, tracks: tracks.iter().map(|t| (t.id, t)).collect(), pools, cat_rate, goals, ledger: Ledger::default(), avoid: Default::default(), require_artist: None }
     }
 
     fn mult(&self, tr: &SelTrack) -> f64 { if self.cfg.goals.iter().any(|g| g.unit == "minutes") { (tr.len_ms as f64 / 60_000.0).max(0.1) } else { 1.0 } }
@@ -289,11 +292,12 @@ impl<'a> Ctx<'a> {
             let drive = |h: u32| (6..10).contains(&h) || (15..19).contains(&h);
             if drive(hour) { if let Some(h) = l.same_hour.get(&tr.id) { if h.iter().any(|(d, hh)| *d == date && drive(*hh) && (*hh < 12) != (hour < 12)) { v.push(R_DRIVE); } } }
         }
-        for t in self.cfg.transitions.iter().filter(|t| t.level == "forbidden") {
+        let themed = !slot.theme.is_empty();
+        for t in self.cfg.transitions.iter().filter(|t| t.level == "forbidden" && !themed) {
             let pair = |a: &SelTrack, b: &SelTrack| matches(a.attr(&t.attr).as_deref(), &t.from) == Some(true) && matches(b.attr(&t.attr).as_deref(), &t.to) == Some(true);
             if nb.prev.map(|p| pair(p, tr)).unwrap_or(false) || nb.next.map(|n| pair(tr, n)).unwrap_or(false) { v.push(R_TRANSITION); break; }
         }
-        for (attr, max) in &r.max_in_row {
+        for (attr, max) in r.max_in_row.iter().filter(|_| !themed) {
             let Some(val) = tr.attr(attr) else { continue };
             let same = |x: &&&SelTrack| x.attr(attr).as_deref() == Some(val.as_str());
             let run = 1 + nb.row_prev.iter().take_while(same).count() + nb.row_next.iter().take_while(same).count();
@@ -349,7 +353,7 @@ impl<'a> Ctx<'a> {
             parts.push(("cíle formátu".into(), if ws > 0.0 { sum / ws } else { 0.5 }, w.goals));
         }
         let und: Vec<_> = self.cfg.transitions.iter().filter(|t| t.level == "undesirable").collect();
-        if !und.is_empty() {
+        if !und.is_empty() && slot.theme.is_empty() {
             let bad = und.iter().any(|t| {
                 let pair = |a: &SelTrack, b: &SelTrack| matches(a.attr(&t.attr).as_deref(), &t.from) == Some(true) && matches(b.attr(&t.attr).as_deref(), &t.to) == Some(true);
                 nb.prev.map(|p| pair(p, tr)).unwrap_or(false) || nb.next.map(|n| pair(tr, n)).unwrap_or(false)
@@ -400,8 +404,8 @@ fn neighbours<'b>(ctx: &'b Ctx, items: &[PlanItem], idx: usize) -> Neigh<'b> {
 pub fn candidates(ctx: &Ctx, hour: &PlanHour, idx: usize, day: &str, seed: u64, include_violations: bool, limit: usize, cat_override: Option<&str>) -> (Vec<Candidate>, BTreeMap<String, usize>) {
     let item = &hour.items[idx];
     let slot = &item.slot;
-    let cat = cat_override.unwrap_or(&slot.category).to_string();
     let music = slot.kind == "music";
+    let cat = match cat_override { Some(c) => c.to_string(), None if music => ctx.cfg.effective_category(&slot.category, hour.spec.hour), None => slot.category.clone() };
     let kind = if music { ctx.cfg.category(&cat).map(|c| c.kind).unwrap_or(TrackKind::Song) } else { slot.track_kind.unwrap_or(TrackKind::Jingle) };
     let pool: Vec<&SelTrack> = if slot.kind == "imaging" && cat.is_empty() {
         ctx.pools.iter().filter(|((k, _), _)| *k == kind).flat_map(|(_, v)| v.iter().copied()).collect()
@@ -419,6 +423,7 @@ pub fn candidates(ctx: &Ctx, hour: &PlanHour, idx: usize, day: &str, seed: u64, 
     for t in pool.iter().take(ctx.cfg.max_candidates.max(10) * 20) {
         let mut viol: Vec<String> = ctx.hard(t, slot, at, hour.spec.date, hour.spec.hour, &nb, day, music).into_iter().map(String::from).collect();
         if let Some(intro) = next_intro { if t.len_ms > intro + 500 { viol.push(R_INTRO.into()); } }
+        if let Some(req) = &ctx.require_artist { if !t.artists.iter().any(|a| req.contains(a)) { viol.push(R_TWOFER.into()); } }
         if !music && slot.kind == "imaging" {
             let min_gap = 30 * MIN;
             if nearest(ctx.ledger.by_track.get(&t.id), at).map(|d| d < min_gap).unwrap_or(false) { viol.push(R_SONG.into()); }
@@ -478,6 +483,7 @@ fn place(ctx: &mut Ctx, h: &mut PlanHour, idx: usize, day: &str, seed: u64, stat
                 if is_music(&it.slot) { let m = ctx.mult(tr); let hk = format!("{}", at / 3_600_000); ctx.ledger.add(tr, at, h.spec.date, h.spec.hour, &ctx.goals.clone(), &hk, m); }
                 else { ins(ctx.ledger.by_track.entry(tr.id).or_default(), at); }
             }
+            if h.items[idx].slot.twofer && ctx.require_artist.is_none() { place_twofer(ctx, h, idx, day, seed); }
             true
         }
         None => {
@@ -493,6 +499,26 @@ fn place(ctx: &mut Ctx, h: &mut PlanHour, idx: usize, day: &str, seed: u64, stat
             false
         }
     }
+}
+
+/// Twofer: k právě umístěné skladbě dá na další hudební pozici skladbu stejného interpreta.
+/// Odstup interpreta se pro tuto dvojici neuplatní (první skladba se na chvíli vyjme z evidence).
+fn place_twofer(ctx: &mut Ctx, h: &mut PlanHour, idx: usize, day: &str, seed: u64) {
+    let Some(partner) = (idx + 1..h.items.len()).find(|&j| h.items[j].slot.kind == "music") else { return };
+    if !matches!(h.items[partner].origin.as_str(), "pending" | "unfilled") { return; }
+    let Some(first) = h.items[idx].track_id.and_then(|id| ctx.tracks.get(&id).copied()) else { return };
+    let at = h.items[idx].est_start.map(|t| t.timestamp_millis()).unwrap_or(0);
+    let hk = format!("{}", at / 3_600_000);
+    let m = ctx.mult(first);
+    let goals = ctx.goals.clone();
+    ctx.ledger.remove(first, at, h.spec.date, h.spec.hour, &goals, &hk, m);
+    ctx.require_artist = Some(first.artists.clone());
+    let mut dummy = GenStats::default();
+    let ok = place(ctx, h, partner, day, seed, &mut dummy);
+    ctx.require_artist = None;
+    ctx.ledger.add(first, at, h.spec.date, h.spec.hour, &goals, &hk, m);
+    if ok { h.items[partner].origin = "twofer".into(); h.items[partner].note = format!("twofer s „{} – {}“", first.artist, first.title); }
+    else { h.items[partner].origin = "pending".into(); h.items[partner].note = "Twofer: žádná další skladba interpreta – doplněno běžně".into(); }
 }
 
 fn unplace(ctx: &mut Ctx, h: &mut PlanHour, idx: usize) {
@@ -514,7 +540,19 @@ pub fn generate_day(ctx: &mut Ctx, inp: DayInput) -> DayPlan {
     let mut hours: Vec<PlanHour> = inp.hours.iter().map(|(utc, h, label)| {
         let wd = inp.date.weekday().number_from_monday();
         let (clock, src) = cfg.clock_for(inp.date, wd, *h).map(|(c, s)| (Some(c), s)).unwrap_or((None, "bez schématu".into()));
-        let items = clock.map(|c| c.slots.iter().enumerate().map(|(i, s)| PlanItem { pos: i, slot: s.clone(), origin: if is_music(s) || s.kind == "imaging" { "pending".into() } else { "marker".into() }, ..Default::default() }).collect()).unwrap_or_default();
+        let mut slots: Vec<Slot> = vec![];
+        for s in clock.map(|c| c.slots.clone()).unwrap_or_default() {
+            if s.kind == "set" {
+                if let Some(set) = cfg.sets.iter().find(|x| x.name == s.set) {
+                    let mut ids = set.track_ids.clone();
+                    if !set.keep_order { ids.sort_by_key(|id| mix(inp.seed, *id as u64, *h as u64)); }
+                    for id in ids { slots.push(Slot { kind: "fixed".into(), track_id: Some(id), label: set.name.clone(), theme: set.name.clone(), set: set.name.clone(), ..Default::default() }); }
+                    continue;
+                }
+            }
+            slots.push(s);
+        }
+        let items = slots.into_iter().enumerate().map(|(i, s)| PlanItem { pos: i, origin: if is_music(&s) || s.kind == "imaging" { "pending".into() } else { "marker".into() }, slot: s, ..Default::default() }).collect();
         PlanHour { spec: HourSpec { hour_utc: *utc, date: inp.date, hour: *h, weekday: wd, label: label.clone(), clock: clock.map(|c| c.name.clone()).unwrap_or_default(), clock_source: src, len_ms: 3_600_000 }, items, total_ms: 0, over_ms: 0, fixed_point: None }
     }).collect();
     // zafixovat pevné a uzamčené
@@ -525,7 +563,7 @@ pub fn generate_day(ctx: &mut Ctx, inp: DayInput) -> DayPlan {
                 let mut k = k.clone(); k.pos = i; k.est_start = h.items[i].est_start; h.items[i] = k;
             } }
             let it = &mut h.items[i];
-            if it.slot.kind == "fixed" && it.track_id.is_none() { it.track_id = it.slot.track_id; it.origin = "fixed".into(); }
+            if it.slot.kind == "fixed" && it.track_id.is_none() { it.track_id = it.slot.track_id; it.origin = if it.slot.set.is_empty() { "fixed".into() } else { "set".into() }; }
             if it.track_id.is_some() && it.origin != "pending" {
                 if let Some(tr) = it.track_id.and_then(|id| ctx.tracks.get(&id).copied()) {
                     let at = it.est_start.map(|t| t.timestamp_millis()).unwrap_or(0);
@@ -535,22 +573,31 @@ pub fn generate_day(ctx: &mut Ctx, inp: DayInput) -> DayPlan {
         }
     }
     // pořadí průchodů: hudba podle pass kategorie, pak imaging
-    let mut order: Vec<(u32, usize, usize)> = vec![];
+    let mut order: Vec<(u32, usize, usize, usize)> = vec![];
+    let n = hours.len().max(1);
+    let day_ord = inp.date.num_days_from_ce() as usize;
     for (hi, h) in hours.iter().enumerate() { for (ii, it) in h.items.iter().enumerate() {
         if it.origin != "pending" { continue; }
         let pass = if it.slot.kind == "music" { cfg.category(&it.slot.category).map(|c| c.pass).unwrap_or(50) } else { 1000 };
-        order.push((pass, hi, ii));
+        // reverzní / posunuté rozložení: mění, která hodina dostane „nejodpočatější“ skladby → skladby se nevrací do stejných hodin
+        let rank = match cfg.rotation_pattern.as_str() {
+            "reverse" if day_ord % 2 == 1 => n - 1 - hi,
+            "shift" => (hi + n - (day_ord * cfg.shift_hours.max(1) as usize) % n) % n,
+            _ => hi,
+        };
+        order.push((pass, rank, hi, ii));
     } }
     order.sort();
-    for (_, hi, ii) in &order {
+    for (_, _, hi, ii) in &order {
         if inp.cancel.map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false) { break; }
+        if hours[*hi].items[*ii].origin != "pending" { continue; }
         place(ctx, &mut hours[*hi], *ii, &day, inp.seed, &mut stats);
     }
     // varianty pro obtížné hodiny
     for hi in 0..hours.len() {
         let unfilled = |h: &PlanHour| h.items.iter().filter(|i| i.origin == "unfilled").count();
         if unfilled(&hours[hi]) == 0 { continue; }
-        let auto_idx: Vec<usize> = hours[hi].items.iter().enumerate().filter(|(_, i)| matches!(i.origin.as_str(), "auto" | "fallback" | "unfilled")).map(|(i, _)| i).collect();
+        let auto_idx: Vec<usize> = hours[hi].items.iter().enumerate().filter(|(_, i)| matches!(i.origin.as_str(), "auto" | "fallback" | "unfilled" | "twofer")).map(|(i, _)| i).collect();
         let score_of = |h: &PlanHour| (unfilled(h), -(h.items.iter().filter_map(|i| i.score).sum::<f64>() * 1000.0) as i64);
         let mut best = hours[hi].clone();
         let mut best_key = score_of(&best);
@@ -577,6 +624,9 @@ pub fn generate_day(ctx: &mut Ctx, inp: DayInput) -> DayPlan {
             }
         }
     }
+    if cfg.linkers.iter().any(|l| l.enabled) {
+        for h in hours.iter_mut() { retime(ctx, h); apply_linkers(ctx, h, inp.seed); }
+    }
     let mut scores = vec![];
     for h in hours.iter_mut() {
         retime(ctx, h);
@@ -592,6 +642,56 @@ pub fn generate_day(ctx: &mut Ctx, inp: DayInput) -> DayPlan {
     stats.hints = hints(&stats, cfg);
     stats.elapsed_ms = started.elapsed().as_millis() as u64;
     DayPlan { day, hours, stats, seed: inp.seed }
+}
+
+/// Linkery: cílené vložení imagingu podle vlastností skladby (před / za skladbu / přes intro). Starší linker položky hodiny se nahradí.
+pub fn apply_linkers(ctx: &mut Ctx, h: &mut PlanHour, seed: u64) {
+    let linkers: Vec<super::Linker> = ctx.cfg.linkers.iter().filter(|l| l.enabled).cloned().collect();
+    h.items.retain(|i| i.origin != "linker");
+    if linkers.is_empty() { return; }
+    let mut count = vec![0u32; linkers.len()];
+    let old = std::mem::take(&mut h.items);
+    let mut out: Vec<PlanItem> = vec![];
+    let make = |ctx: &mut Ctx, l: &super::Linker, at: i64, max_len: Option<i64>| -> Option<PlanItem> {
+        let pool: Vec<&SelTrack> = if l.category.is_empty() { ctx.pools.iter().filter(|((k, _), _)| *k == l.track_kind).flat_map(|(_, v)| v.iter().copied()).collect() }
+            else { ctx.pools.get(&(l.track_kind, l.category.clone())).cloned().unwrap_or_default() };
+        let gap = l.min_gap_min as i64 * MIN;
+        let best = pool.into_iter().filter(|t| t.enabled && !t.attrs.paused && max_len.map(|m| t.len_ms <= m).unwrap_or(true))
+            .filter_map(|t| { let d = nearest(ctx.ledger.by_track.get(&t.id), at); if d.map(|x| x < gap).unwrap_or(false) { None } else { Some((d.unwrap_or(i64::MAX), mix(seed, t.id as u64, at as u64) % 1000, t)) } })
+            .max_by_key(|x| (x.0, x.1)).map(|x| x.2)?;
+        ins(ctx.ledger.by_track.entry(best.id).or_default(), at);
+        Some(PlanItem { slot: Slot { kind: "imaging".into(), category: l.category.clone(), track_kind: Some(l.track_kind), label: l.name.clone(), position: if l.position == "over_intro" { Some("start".into()) } else { None }, ..Default::default() },
+            track_id: Some(best.id), origin: "linker".into(), note: format!("linker „{}“", l.name), est_start: None, length_ms: best.len_ms, ..Default::default() })
+    };
+    // dvojice (twofer) a sady se jinglem nerozdělují
+    let glued = |it: &PlanItem| it.origin == "twofer" || it.origin == "set";
+    let firsts: Vec<bool> = old.iter().enumerate().map(|(i, it)| it.origin == "set" && (i == 0 || old[i - 1].origin != "set")).collect();
+    let next_glued: Vec<bool> = (0..old.len()).map(|i| old.get(i + 1).map(|n| n.origin == "twofer" || (n.origin == "set" && !firsts[i + 1])).unwrap_or(false)).collect();
+    for (idx, it) in old.into_iter().enumerate() {
+        let no_before = glued(&it) && !firsts[idx];
+        let no_after = next_glued[idx];
+        let tr = if is_music(&it.slot) { it.track_id.and_then(|id| ctx.tracks.get(&id).copied()) } else { None };
+        let at = it.est_start.map(|t| t.timestamp_millis()).unwrap_or(0);
+        let fits = |l: &super::Linker, tr: &SelTrack| l.when.iter().all(|(k, req)| matches(tr.attr(k).as_deref(), req) == Some(true));
+        let mut after: Option<PlanItem> = None;
+        if let Some(tr) = tr {
+            for (li, l) in linkers.iter().enumerate() {
+                if count[li] >= l.max_per_hour || !fits(l, tr) { continue; }
+                if (l.position == "after" && no_after) || (l.position != "after" && no_before) { continue; }
+                let prev_img = out.last().map(|p| p.slot.kind == "imaging").unwrap_or(false);
+                let new = match l.position.as_str() {
+                    "after" => if after.is_none() { make(ctx, l, at + tr.len_ms, None).map(|x| { after = Some(x); }) } else { None },
+                    "over_intro" => if !prev_img && tr.intro_ms >= l.min_intro_ms { make(ctx, l, at, Some(tr.intro_ms)).map(|x| out.push(x)) } else { None },
+                    _ => if !prev_img { make(ctx, l, at, None).map(|x| out.push(x)) } else { None },
+                };
+                if new.is_some() { count[li] += 1; break; }
+            }
+        }
+        out.push(it);
+        if let Some(a) = after { out.push(a); }
+    }
+    for (i, it) in out.iter_mut().enumerate() { it.pos = i; }
+    h.items = out;
 }
 
 fn hints(st: &GenStats, cfg: &SelectorConfig) -> Vec<String> {
@@ -661,6 +761,10 @@ pub fn capacity(cfg: &SelectorConfig, tracks: &[SelTrack], day: &str) -> Vec<Cat
         over.sort_by(|a, b| b.1.cmp(&a.1));
         over.truncate(8);
         if !over.is_empty() && feasible { msg.push_str(&format!(" Pozor na interprety s mnoha tituly ({}).", over.iter().take(3).map(|(a, n)| format!("{a} {n}×")).collect::<Vec<_>>().join(", "))); }
+        if feasible && turnover_h >= 1.0 && cfg.rotation_pattern == "standard" {
+            let r = turnover_h.round();
+            if (turnover_h - r).abs() < 0.3 && 24.0 % r == 0.0 { msg.push_str(&format!(" Obrat {r:.0} h dělí 24 h – skladby se budou vracet do stejných hodin; zvažte posunutou nebo reverzní rotaci.")); }
+        }
         let unknown = req.get(&c).map(|keys| pool.iter().filter(|t| keys.iter().any(|k| t.attr(k).is_none())).count()).unwrap_or(0);
         CategoryCapacity { role: cfg.category(&c).map(|x| x.role.clone()).unwrap_or_default(), category: c, tracks: pool.len(), eligible, slots_week, per_hour: (per_hour * 100.0).round() / 100.0,
             turnover_h: (turnover_h * 10.0).round() / 10.0, spins_per_track_week: if eligible > 0 { (slots_week as f64 / eligible as f64 * 10.0).round() / 10.0 } else { 0.0 }, feasible, message: msg, overloaded_artists: over, unknown_attrs: unknown }
@@ -779,5 +883,72 @@ mod tests {
         eprintln!("PERF: 3000 skladeb, 7 dní, 2016 pozic: {:?}, neobsazeno {}", el, unfilled);
         assert_eq!(unfilled, 0);
         assert!(el.as_secs() < 120);
+    }
+
+    fn run(cfg: &SelectorConfig, tracks: &[SelTrack], days: i64) -> Vec<DayPlan> {
+        let mut ctx = Ctx::new(cfg, tracks);
+        (0..days).map(|d| { let date = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap() + Duration::days(d); generate_day(&mut ctx, DayInput { date, hours: day_hours(&Utc, date), keep: HashMap::new(), seed: 7, cancel: None }) }).collect()
+    }
+
+    #[test]
+    fn twofer_sets_themes() {
+        let mut tracks: Vec<SelTrack> = (1..=40).map(|i| tr(i, "A", &format!("Artist {}", i % 8))).collect();
+        tracks.push(tr(500, "S", "Orchestr")); tracks.push(tr(501, "S", "Orchestr")); tracks.push(tr(502, "S", "Orchestr"));
+        let mut cfg = cfg_a(4, 60);
+        cfg.rules.artist_sep_min = 90;
+        cfg.clocks[0].slots[0].twofer = true;
+        cfg.sets = vec![crate::selector::TrackSet { name: "Symfonie".into(), track_ids: vec![502, 500, 501], keep_order: true, note: String::new() }];
+        cfg.clocks[0].slots.push(Slot { kind: "set".into(), set: "Symfonie".into(), ..Default::default() });
+        for i in 100..120 { let mut t = tr(i, "ID", "Radio"); t.kind = TrackKind::Jingle; t.len_ms = 4000; tracks.push(t); }
+        cfg.linkers = vec![crate::selector::Linker { name: "vždy".into(), position: "before".into(), track_kind: TrackKind::Jingle, category: "ID".into(), max_per_hour: 20, min_gap_min: 0, ..Default::default() }];
+        let p = &run(&cfg, &tracks, 1)[0];
+        let mut h = p.hours[5].clone();
+        h.items.retain(|i| i.origin != "linker");
+        assert!(p.hours[5].items.windows(2).all(|w| !(w[0].origin == "linker" && (w[1].origin == "twofer" || (w[1].origin == "set" && w[1].track_id != Some(502))))), "jingle nerozdělí dvojici ani sadu");
+        assert!(p.hours[5].items.iter().any(|i| i.origin == "linker"));
+        let a = h.items[0].track_id.unwrap(); let b = h.items[1].track_id.unwrap();
+        let ta = tracks.iter().find(|t| t.id == a).unwrap(); let tb = tracks.iter().find(|t| t.id == b).unwrap();
+        assert_eq!(h.items[1].origin, "twofer");
+        assert_eq!(ta.artists, tb.artists, "twofer = stejný interpret i přes 90min odstup");
+        let set: Vec<i64> = h.items.iter().filter(|i| i.origin == "set").map(|i| i.track_id.unwrap()).collect();
+        assert_eq!(set, vec![502, 500, 501], "sada v zadaném pořadí");
+    }
+
+    #[test]
+    fn shifted_rotation_breaks_same_hour_lock() {
+        // 12 titulů, 3 pozice/h → obrat 4 h dělí 24 h: standardní rotace vrací skladby do stejných hodin
+        let tracks: Vec<SelTrack> = (1..=12).map(|i| tr(i, "A", &format!("Artist {i}"))).collect();
+        let same_hour = |cfg: &SelectorConfig| {
+            let plans = run(cfg, &tracks, 6);
+            let mut seen: std::collections::HashMap<(i64, u32), usize> = Default::default();
+            for p in &plans { for h in &p.hours { for i in &h.items { if let Some(t) = i.track_id { *seen.entry((t, h.spec.hour)).or_default() += 1; } } } }
+            seen.values().filter(|c| **c > 1).map(|c| c - 1).sum::<usize>()
+        };
+        let std_cfg = cfg_a(3, 180);
+        let mut shift_cfg = cfg_a(3, 180);
+        shift_cfg.rotation_pattern = "shift".into();
+        shift_cfg.shift_hours = 5;
+        let (a, b) = (same_hour(&std_cfg), same_hour(&shift_cfg));
+        eprintln!("stejná hodina: standard {a}, posunutá {b}");
+        assert!(b < a, "posunutá rotace musí snížit návraty do stejných hodin ({b} vs {a})");
+        let cap = capacity(&std_cfg, &tracks, "2026-11-23");
+        assert!(cap[0].message.contains("stejných hodin"));
+    }
+
+    #[test]
+    fn linkers_and_daypart_alt() {
+        let mut tracks: Vec<SelTrack> = (1..=30).map(|i| { let mut t = tr(i, "A", &format!("Artist {i}")); t.attrs.language = if i % 2 == 0 { "cs".into() } else { "en".into() }; t }).collect();
+        for i in 100..106 { let mut t = tr(i, "ID CZ", "Radio"); t.kind = TrackKind::Jingle; t.len_ms = 5000; tracks.push(t); }
+        for i in 200..230 { tracks.push(tr(i, "A night", &format!("Night {i}"))); }
+        let mut cfg = cfg_a(4, 60);
+        cfg.linkers = vec![crate::selector::Linker { name: "CZ jingle".into(), when: [("language".to_string(), "cs".to_string())].into(), position: "before".into(), track_kind: TrackKind::Jingle, category: "ID CZ".into(), max_per_hour: 1, min_gap_min: 30, ..Default::default() }];
+        cfg.categories[0].daypart_alt.insert("Noc".into(), "A night".into());
+        let p = &run(&cfg, &tracks, 1)[0];
+        let day = &p.hours[12];
+        let li: Vec<usize> = day.items.iter().enumerate().filter(|(_, i)| i.origin == "linker").map(|(k, _)| k).collect();
+        assert_eq!(li.len(), 1, "max 1 za hodinu");
+        let next = day.items[li[0] + 1].track_id.unwrap();
+        assert_eq!(tracks.iter().find(|t| t.id == next).unwrap().attrs.language, "cs", "jingle před českou skladbou");
+        assert!(p.hours[2].items.iter().all(|i| i.track_id.map(|t| t >= 200).unwrap_or(true)), "v noci alternativní kategorie");
     }
 }

@@ -94,9 +94,9 @@ proprietární algoritmy a neveřejné edice nejsou ověřené – ORCA má vlas
 | 11 | Jazyk, země, lokální, dekáda, žánr, zvuk, BPM, energie, nálada, známost, explicitnost, vlastní | hotovo | `MusicAttrs`, `SelTrack::attr` | filtr „Chybí: jazyk“ | – | UI Atributy |
 | 12 | Neznámá hodnota ≠ nula | hotovo | `Option<…>`, UI „?“ | – | – | `matches()` vrací None |
 | 13 | Platnost, sezónní nasazení, pozastavení, váha | hotovo | `active_from/to`, `paused`, `weight` | vánoční písně | – | `active_on` |
-| 14 | Alternativní kategorie podle pásma, podmnožiny, balíčky | chybí | – | – | – | – |
+| 14 | Alternativní kategorie podle pásma, podmnožiny, balíčky | hotovo | `SelCategory.daypart_alt`, `effective_category` | v noci klidnější verze kategorie | podmnožiny řešíte požadavky atributů pozice | test `linkers_and_daypart_alt` |
 | 15 | Hromadná editace s náhledem, import CSV s chybami, návrhy s původem | hotovo | `bulk_set(dry_run)`, `/selector/attrs/import`, `suggest` | – | – | test API |
-| 16 | Audioanalýza BPM / energie dávkou | chybí | (LUFS a cue body analýza existuje) | – | BPM jen ruční / import | – |
+| 16 | Audioanalýza BPM / energie dávkou | hotovo | `selector/audiofeat.rs` (onset obálka, autokorelace 60–200 BPM, energie 1–5 podle kvintilů knihovny), `/selector/analysis` | ruční a importované hodnoty se nepřepíší | odhad tempa může být poloviční/dvojnásobný u složitých rytmů – oprava ručně má přednost | test `tempo_from_clicks` (90/120/128/150 BPM ±3 %) |
 | 17 | Duplicity k potvrzení | hotovo | `duplicates()` | – | – | UI |
 | 18 | Clocky: verze, kopie, klávesnice, typy pozic, pevný čas, volitelná pozice | hotovo | `SelClock`, `Slot`, UI Schémata | – | přetažení myší: šipky / Alt+↑↓ | UI |
 | 19 | Týdenní mřížka, pásma, datované výjimky s prioritou | hotovo | `clock_for`, test `exceptions_priority` | Vánoce, koncert | – | test |
@@ -109,14 +109,14 @@ proprietární algoritmy a neveřejné edice nejsou ověřené – ORCA má vlas
 | 26 | Cíle zastoupení s jednotkou a jmenovatelem, závazné s proveditelností | částečně | `Goal`, `soft()`, `hard()` | CZ 30 % ± 5 | rozsah „týden / pásmo“ jen jako den / hodina + pásmo | simulace |
 | 27 | Přechody povoleno / nežádoucí / zakázáno | hotovo | `Transition` | – | souběh více podmínek jako více řádků | – |
 | 28 | Rozsah pravidla (stanice/pásmo/šablona/kategorie/pozice) | částečně | pravidla stanice, cíle s pásmem, požadavky pozice | – | pravidla na kategorii zatím ne | – |
-| 29 | Twofers, tematické bloky, sady se zachováním pořadí | chybí | (pevné tituly v clocku) | – | – | – |
+| 29 | Twofers, tematické bloky, sady se zachováním pořadí | hotovo | `Slot.twofer`, `Slot.theme`, `TrackSet` + pozice `set` | dvojice interpreta, blok 80. let, výročí | uvnitř bloku se nehlídají přechody / max. za sebou; odstupy ano | test `twofer_sets_themes` |
 | 30 | Projekce: použitelné tituly, spiny, obrat, konflikty, přetížení interpretů | hotovo | `capacity()`, test kalibrace | 12 titulů × 3/h = 4 h | – | test |
 | 31 | Pořadí průchodů, skóre s rozkladem, opomíjené skladby | hotovo | `pass`, `soft()`, breakdown | – | – | UI alternativy |
 | 32 | Varianty se seedem, opakovatelnost, zrušení, průběh | hotovo | `variants`, `GenStatus`, `cancel_gen` | – | – | test determinismu |
 | 33 | Neobsazené pozice s důvody a návrhem | hotovo | `place()`, `hints()` | úzká kategorie | – | test kalibrace |
-| 34 | Reverzní / posunutá rotace | chybí | – | – | detekce stejné hodiny je | – |
+| 34 | Reverzní / posunutá rotace | hotovo | `rotation_pattern` (standard / reverse / shift), `shift_hours`; varování kapacity při obratu dělícím 24 h | posluchač ve stejnou hodinu | – | test `shifted_rotation_breaks_same_hour_lock` (návraty do stejné hodiny 360 → 224 za 6 dní) |
 | 35 | Simulace změny počtu pozic bez živých dat | hotovo | `/selector/simulate` | 3 → 2 Power | – | UI „Odhad účinku“ |
-| 36 | Imaging rotace, sweeper přes intro (kontrola délky intra) | částečně | `Slot.kind=imaging`, `R_INTRO` | – | cílené vložení podle atributu skladby chybí | – |
+| 36 | Imaging rotace, sweeper přes intro (kontrola délky intra) | hotovo | `Slot.kind=imaging`, `R_INTRO`, `Linker` (podmínky na atributy, před / po / přes intro, max. za hodinu, odstup), `apply_linkers`, `relink_hour` po výměně | jingle před českou skladbou | jingly nerozdělí twofer ani sadu | test `linkers_and_daypart_alt`, `twofer_sets_themes` |
 | 37 | Editor: výměna, přesun, vložení, zámek, alternativy se skóre, přegenerování úseku | hotovo | `Edit`, `regenerate_hours` | dramaturg vyměnil hit | vložení jen přes API | UI |
 | 38 | Revize, porovnání, koncept → publikováno, atomičnost, 409 | hotovo | `publish`, `/logs/compare` | – | – | test API |
 | 39 | Ochranné okno, nezměnit hranou položku | hotovo | `protect_min`, `sel_consumed` | – | – | – |
@@ -130,10 +130,10 @@ proprietární algoritmy a neveřejné edice nejsou ověřené – ORCA má vlas
 | 47 | Opakování: top 10, koncentrace, Jaccard, stejná hodina, dvojice, série | hotovo | `station_report` | – | trojice zatím ne | test Jaccard |
 | 48 | „Jak stanice působí“, „Odpovídá formátu?“ se skóre a metodou | hotovo | `format_checks` | – | aircheck = existující archiv nahrávek | UI |
 | 49 | Export CSV s verzí metrik, pásmem, jednotkami | hotovo | `analytics::csv` | – | – | API |
-| 50 | OSA / INTERGRAM | nelze ověřit | existující reporty `reports.rs` | – | aktuální specifikace neověřena | – |
+| 50 | OSA / INTERGRAM | hotovo (šablona) | `cmo.rs`, `/reports/cmo/*`, viz `docs/cmo.md` | měsíční hlášení, kontrola úplnosti, termín 15. prac. dne | přesné pořadí sloupců / DR rozhraní INTERGRAM nebylo veřejně dostupné – výchozí šablona dle licenční smlouvy OSA, upravitelná | testy `isrc_and_deadline`, `validation_and_export` |
 | 51 | Presety formátů (20), průvodce 5 kroků, verze, kopie, neprepisovat stanice | hotovo | `presets::catalog/apply`, UI průvodce | nový dramaturg | hodnoty = návrhové výchozí body | test `largest_remainder` |
 | 52 | Rychlý / běžný / volný stupeň rotace | hotovo | `ApplyPreset.rotation` | – | – | – |
-| 53 | Oprávnění čtení / dramaturgie / publikace / admin | částečně | `/selector` → oprávnění „schedule“ | – | publikace = stejné oprávnění jako úpravy | – |
+| 53 | Oprávnění čtení / dramaturgie / publikace / admin | hotovo | oprávnění `publish`, role `director`; `required_perm` | dramaturg upravuje, ředitel publikuje | stávajícím editorům migrace v10 oprávnění ponechá | test `perms_map` |
 | 54 | Audit ručních výjimek | hotovo | `audit_log` selector_override / publish | – | – | – |
 | 55 | Demo data označená, jen pro test | hotovo | kategorie „DEMO …“, `origin = demo` (jen testovací instalace) | – | v produkci se neinstalují | – |
 

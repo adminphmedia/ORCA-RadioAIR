@@ -141,6 +141,12 @@ pub struct Track {
     /// Outro: začátek instrumentálního konce (ms od začátku souboru, 0 = nenastaveno)
     #[serde(default)]
     pub outro_ms: i64,
+    /// Autoři textu (OSA hlášení; autoři hudby jsou v `composer`).
+    #[serde(default)]
+    pub lyricist: String,
+    /// Značka výrobce / label nahrávky (OSA, INTERGRAM).
+    #[serde(default)]
+    pub label: String,
 }
 fn d_bed_intro() -> i64 { 3000 }
 fn d_bed_outro() -> i64 { 3000 }

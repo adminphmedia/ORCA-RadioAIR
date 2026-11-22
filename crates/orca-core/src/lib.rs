@@ -5,6 +5,7 @@ pub mod analysis;
 pub mod audio_out;
 pub mod automation;
 pub mod catalog;
+pub mod cmo;
 pub mod config;
 pub mod db;
 pub mod decode;

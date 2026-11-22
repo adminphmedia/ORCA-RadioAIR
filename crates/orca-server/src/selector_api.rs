@@ -45,6 +45,11 @@ pub fn routes() -> Router<St> {
         .route("/analytics/artist", get(an_artist))
         .route("/analytics/rotation", get(an_rotation))
         .route("/analytics/export.csv", get(an_export))
+        .route("/selector/analysis", get(af_status).post(af_start))
+        .route("/selector/analysis/cancel", post(af_cancel))
+        .route("/reports/cmo/config", get(cmo_get).put(cmo_put))
+        .route("/reports/cmo/validate", get(cmo_validate))
+        .route("/reports/cmo/{which}", get(cmo_export))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, ApiError> {
@@ -66,7 +71,7 @@ fn today() -> NaiveDate { Local::now().date_naive() }
 
 async fn config_get(State(o): State<St>) -> ApiResult {
     let v = blocking(move || selector::load_config(&o.db)).await?;
-    Ok(Json(json!({ "version": v.version, "updated_at": v.updated_at, "updated_by": v.updated_by, "data": v.data, "rules_text": selector::describe_rules(&v.data.rules) })).into_response())
+    Ok(Json(json!({ "version": v.version, "updated_at": v.updated_at, "updated_by": v.updated_by, "data": v.data, "rules_text": selector::describe_config(&v.data) })).into_response())
 }
 #[derive(Deserialize)]
 struct SaveCfg { base_version: i64, data: SelectorConfig }
@@ -82,7 +87,7 @@ async fn config_restore(State(o): State<St>, h: HeaderMap, Json(r): Json<Restore
     let u = user(&h);
     Ok(Json(json!({ "version": blocking(move || selector::restore_config(&o.db, r.version, &u)).await? })).into_response())
 }
-async fn describe(Json(c): Json<SelectorConfig>) -> ApiResult { Ok(Json(selector::describe_rules(&c.rules)).into_response()) }
+async fn describe(Json(c): Json<SelectorConfig>) -> ApiResult { Ok(Json(selector::describe_config(&c)).into_response()) }
 
 // ---------------------------------------------------------------------------------------------
 // Presety, kapacita, simulace
@@ -96,7 +101,7 @@ async fn preset_preview(State(o): State<St>, Json(a): Json<presets::ApplyPreset>
         let cfg = presets::apply(&p, &a, &base);
         let tracks = attrs::load_tracks(&o.db, &logs::all_kinds(&cfg))?;
         let cap = generator::capacity(&cfg, &tracks, &today().to_string());
-        Ok(json!({ "config": cfg, "capacity": cap, "rules_text": selector::describe_rules(&cfg.rules) }))
+        Ok(json!({ "config": cfg, "capacity": cap, "rules_text": selector::describe_config(&cfg) }))
     }).await?;
     Ok(Json(v).into_response())
 }
@@ -519,4 +524,51 @@ async fn an_export(State(o): State<St>, Query(q): Query<ExpQ>) -> ApiResult {
         Ok(analytics::csv(&spins_for(&o, &cfg, &f, from, to)?))
     }).await?;
     Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()), (header::CONTENT_DISPOSITION, "attachment; filename=\"orca-as-played.csv\"".to_string())], s).into_response())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Automatická analýza BPM a energie
+
+#[derive(Deserialize)]
+struct AfReq { #[serde(default)] kinds: Vec<orca_core::model::TrackKind>, #[serde(default = "yes")] only_missing: bool }
+fn yes() -> bool { true }
+async fn af_start(State(o): State<St>, Json(r): Json<AfReq>) -> ApiResult {
+    let kinds = if r.kinds.is_empty() { vec![orca_core::model::TrackKind::Song] } else { r.kinds };
+    let db = o.db.clone();
+    Ok(Json(blocking(move || selector::audiofeat::start(db, kinds, r.only_missing)).await?).into_response())
+}
+async fn af_status() -> ApiResult { Ok(Json(selector::audiofeat::status()).into_response()) }
+async fn af_cancel() -> ApiResult { selector::audiofeat::cancel(); crate::ok() }
+
+// ---------------------------------------------------------------------------------------------
+// Hlášení OSA / INTERGRAM
+
+use orca_core::cmo;
+
+async fn cmo_get(State(o): State<St>) -> ApiResult {
+    let c = cmo::load_config(&o.db)?;
+    let cols: Vec<_> = cmo::COLUMN_KEYS.iter().map(|(k, l)| json!({ "key": k, "label": l })).collect();
+    Ok(Json(json!({ "config": c, "columns": cols, "defaults": cmo::CmoConfig::default() })).into_response())
+}
+async fn cmo_put(State(o): State<St>, Json(c): Json<cmo::CmoConfig>) -> ApiResult {
+    cmo::save_config(&o.db, &c).map_err(|e| bad(&e.to_string()))?;
+    Ok(Json(c).into_response())
+}
+#[derive(Deserialize)]
+struct CmoQ { month: Option<String>, profile: Option<String> }
+fn prev_month() -> String { let t = today(); let d = t - Duration::days(t.format("%d").to_string().parse::<i64>().unwrap_or(1)); d.format("%Y-%m").to_string() }
+async fn cmo_validate(State(o): State<St>, Query(q): Query<CmoQ>) -> ApiResult {
+    let month = q.month.unwrap_or_else(prev_month);
+    let which = q.profile.unwrap_or_else(|| "osa".into());
+    let r = blocking(move || { let c = cmo::load_config(&o.db)?; let u = cmo::uses(&o.db, &month, &c)?; cmo::validate(&c, &which, &month, &u) }).await?;
+    Ok(Json(r).into_response())
+}
+async fn cmo_export(State(o): State<St>, Path(which): Path<String>, Query(q): Query<CmoQ>) -> ApiResult {
+    let which = which.trim_end_matches(".csv").to_string();
+    if which != "osa" && which != "intergram" { return Err(bad("hlášení: osa | intergram")); }
+    let month = q.month.unwrap_or_else(prev_month);
+    let (w2, m2) = (which.clone(), month.clone());
+    let (bytes, enc) = blocking(move || { let c = cmo::load_config(&o.db)?; let u = cmo::uses(&o.db, &m2, &c)?; let t = cmo::export_text(&c, &w2, &u)?; Ok(cmo::encode(&c, &t)) }).await?;
+    let name = format!("attachment; filename=\"{}-{}.csv\"", which, month);
+    Ok(([(header::CONTENT_TYPE, format!("text/csv; charset={enc}")), (header::CONTENT_DISPOSITION, name)], bytes).into_response())
 }

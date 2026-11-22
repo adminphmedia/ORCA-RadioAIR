@@ -196,7 +196,37 @@ pub fn edit(db: &Db, log_id: i64, token: i64, e: &Edit, user: &str) -> Result<i6
         Ok(())
     })?;
     retime_log(db, log_id)?;
+    // výměna/vyprázdnění skladby mění vlastnosti → jingly podle vlastností skladby se přepočítají pro hodinu
+    let item = match e { Edit::Replace { item_id, .. } | Edit::Clear { item_id } => Some(*item_id), _ => None };
+    if let Some(item_id) = item {
+        let hour: Option<String> = db.with_conn(|c| -> Result<Option<String>> { Ok(c.query_row("SELECT hour_utc FROM sel_items WHERE id=?1", [item_id], |r| r.get(0)).optional()?) })?;
+        if let Some(h) = hour { relink_hour(db, log_id, &h)?; }
+    }
     Ok(new_token)
+}
+
+/// Znovu vloží automatické jingly (linkery) v jedné hodině konceptu podle aktuálních skladeb.
+pub fn relink_hour(db: &Db, log_id: i64, hour_utc: &str) -> Result<()> {
+    let cfg = load_config(db)?;
+    if !cfg.data.linkers.iter().any(|l| l.enabled) { return Ok(()); }
+    let tracks = load_tracks(db, &all_kinds(&cfg.data))?;
+    let plan = load_plan(db, log_id)?;
+    let hu = DateTime::parse_from_rfc3339(hour_utc)?.with_timezone(&Utc);
+    let mut ctx = Ctx::new(&cfg.data, &tracks);
+    for h in plan.hours.iter().filter(|h| h.spec.hour_utc != hu) {
+        for it in &h.items { if let (Some(t), Some(at)) = (it.track_id, it.est_start) { ctx.add_history(&Placement { track_id: t, at: at.timestamp_millis(), date: h.spec.date, hour: h.spec.hour }); } }
+    }
+    let Some(mut hour) = plan.hours.into_iter().find(|h| h.spec.hour_utc == hu) else { return Ok(()); };
+    let seed = cfg.data.seed ^ hu.timestamp() as u64;
+    generator::apply_linkers(&mut ctx, &mut hour, seed);
+    db.with_conn(|c| -> Result<()> {
+        let tx = c.unchecked_transaction()?;
+        tx.execute("DELETE FROM sel_items WHERE log_id=?1 AND hour_utc=?2", params![log_id, hour_utc])?;
+        insert_items(&tx, log_id, &DayPlan { day: String::new(), hours: vec![hour], stats: Default::default(), seed: 0 })?;
+        tx.commit()?;
+        Ok(())
+    })?;
+    retime_log(db, log_id)
 }
 
 /// Přepočet odhadovaných časů a délek po úpravě.
