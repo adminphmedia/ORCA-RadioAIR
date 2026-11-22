@@ -72,9 +72,15 @@ pub struct Engine {
     pub rate: AtomicU32,
     /// Načte aktuální verzi skladby z DB (cue body se mohly změnit po zařazení do fronty).
     resolver: RwLock<Option<TrackResolver>>,
+    stitch_resolver: RwLock<Option<StitchResolver>>,
 }
 
 pub type TrackResolver = Arc<dyn Fn(i64) -> Option<Track> + Send + Sync>;
+/// Složí Stitcher v okamžiku přehrání: (typ, položky ve frontě za ním) → plán.
+pub type StitchResolver = Arc<dyn Fn(&str, &[QueueItem]) -> anyhow::Result<crate::stitcher::StitchPlan> + Send + Sync>;
+
+/// Sweeper / voice track čekající na svou pozici ve skladbě.
+struct PendingOverlay { host_id: String, trigger: u64, item: QueueItem }
 
 // ---------------------------------------------------------------------------------------------
 // Přednačítání (dekódování v samostatném vlákně do ring bufferu)
@@ -90,15 +96,21 @@ impl Drop for Prefetch { fn drop(&mut self) { self.stop.store(true, Ordering::Se
 
 impl Prefetch {
     fn start(path: PathBuf, start_ms: i64, max_frames: u64, rate: u32) -> Prefetch {
+        Self::start_segments(vec![(path, start_ms, max_frames)], rate)
+    }
+
+    /// Více souborů za sebou (Stitcher): (cesta, začátek ms, počet snímků)
+    fn start_segments(segments: Vec<(PathBuf, i64, u64)>, rate: u32) -> Prefetch {
         let (mut prod, cons) = rtrb::RingBuffer::<f32>::new(rate as usize * 2 * PREFETCH_SECONDS);
         let done = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
         let (d, s, f) = (done.clone(), stop.clone(), failed.clone());
         let _ = std::thread::Builder::new().name("orca-decode".into()).spawn(move || {
+          'segs: for (path, start_ms, max_frames) in segments {
             let mut stream = match StereoStream::open(&path, rate, start_ms) {
                 Ok(s) => s,
-                Err(e) => { log::error!("nelze přehrát {}: {e}", path.display()); f.store(true, Ordering::SeqCst); d.store(true, Ordering::SeqCst); return; }
+                Err(e) => { log::error!("nelze přehrát {}: {e}", path.display()); f.store(true, Ordering::SeqCst); continue 'segs; }
             };
             let mut buf = Vec::new();
             let mut written: u64 = 0;
@@ -125,6 +137,8 @@ impl Prefetch {
                     slice = &slice[n..];
                 }
             }
+            if s.load(Ordering::Relaxed) { break 'segs; }
+          }
             d.store(true, Ordering::SeqCst);
         });
         Prefetch { cons, done, stop, failed }
@@ -245,6 +259,7 @@ impl Engine {
             events,
             rate: AtomicU32::new(ENGINE_RATE),
             resolver: RwLock::new(None),
+            stitch_resolver: RwLock::new(None),
         });
         let e = engine.clone();
         std::thread::Builder::new().name("orca-mixer".into()).spawn(move || e.mixer_loop(cmd_rx)).expect("mixer thread");
@@ -254,6 +269,7 @@ impl Engine {
     pub fn send(&self, c: Cmd) { let _ = self.cmd_tx.send(c); }
 
     pub fn set_resolver(&self, r: TrackResolver) { *self.resolver.write() = Some(r); }
+    pub fn set_stitch_resolver(&self, r: StitchResolver) { *self.stitch_resolver.write() = Some(r); }
 
     fn refresh(&self, item: &mut QueueItem) {
         if item.track.id <= 0 { return; }
@@ -308,7 +324,45 @@ impl Engine {
     }
 
     fn make_voice(&self, item: QueueItem, overlay: bool, preloaded: Option<Prefetch>) -> Voice {
+        self.make_voice_full(item, overlay, preloaded).0
+    }
+
+    /// Hlas + případný podkres (Stitcher).
+    fn make_voice_full(&self, mut item: QueueItem, overlay: bool, preloaded: Option<Prefetch>) -> (Voice, Option<Voice>) {
         let rate = self.sample_rate();
+        if let Some(kind) = item.stitch.clone() {
+            let upcoming = self.queue_snapshot();
+            let plan = self.stitch_resolver.read().clone().map(|r| r(&kind, &upcoming));
+            let ms_f = |ms: i64| (ms.max(0) as u64 * rate as u64) / 1000;
+            return match plan {
+                Some(Ok(plan)) => {
+                    let total = plan.total_ms();
+                    item.track.title = plan.title.clone();
+                    item.track.duration_ms = total; item.track.cue_in_ms = 0; item.track.mix_ms = total; item.track.cue_out_ms = total;
+                    item.track.lufs = None; item.track.gain_db = 0.0;
+                    let segs = plan.segments.iter().map(|sg| (PathBuf::from(&sg.path), sg.start_ms, ms_f(sg.len_ms()))).collect();
+                    let v = Voice::new(item.clone(), Prefetch::start_segments(segs, rate), rate, 0.0, overlay);
+                    let bed = plan.bed.map(|(sg, gain, len_ms)| {
+                        let len_ms = len_ms.min(sg.len_ms());
+                        let mut bt = item.track.clone();
+                        bt.title = "Stitcher – podkres".into(); bt.path = sg.path.clone(); bt.kind = Some(crate::model::TrackKind::Asset);
+                        bt.cue_in_ms = sg.start_ms; bt.cue_out_ms = sg.start_ms + len_ms; bt.mix_ms = bt.cue_out_ms; bt.duration_ms = bt.cue_out_ms;
+                        let bi = QueueItem::new(bt, "stitcher-bed", "podkres stitcheru");
+                        let mut bv = Voice::new(bi, Prefetch::start(PathBuf::from(&sg.path), sg.start_ms, ms_f(len_ms), rate), rate, gain as f64, true);
+                        let fade = ms_f(800).min(bv.len);
+                        bv.fade = Some(Fade { from: 1.0, to: 0.0, start: bv.len - fade, len: fade });
+                        bv
+                    });
+                    (v, bed)
+                }
+                Some(Err(e)) => {
+                    self.events.alert("warning", "stitcher_failed", format!("Stitcher ({kind}): {e}"));
+                    item.track.duration_ms = 0; item.track.cue_out_ms = 0; item.track.mix_ms = 0;
+                    (Voice::new(item, Prefetch::start_segments(vec![], rate), rate, 0.0, overlay), None)
+                }
+                None => (Voice::new(item, Prefetch::start_segments(vec![], rate), rate, 0.0, overlay), None),
+            };
+        }
         let (normalize, target) = { let c = self.cfg.read(); (c.audio.normalize, c.audio.target_lufs) };
         let gain_db = item.track.playback_gain_db(normalize, target);
         let (cue_in, _, cue_out) = item.track.effective_cues();
@@ -319,7 +373,24 @@ impl Engine {
         while src.buffered_frames() < BLOCK * 4 && !src.done.load(Ordering::Acquire) && t0.elapsed() < Duration::from_millis(40) {
             std::thread::sleep(Duration::from_millis(2));
         }
-        Voice::new(item, src, rate, gain_db, overlay)
+        (Voice::new(item, src, rate, gain_db, overlay), None)
+    }
+
+    /// Kdy (snímek hostitelské skladby) začne sweeper/voice track.
+    fn overlay_trigger(host: &Voice, ov: &QueueItem, rate: u32) -> u64 {
+        let ms_f = |ms: i64| (ms.max(0) as u64 * rate as u64) / 1000;
+        let (ci, _, co) = ov.track.effective_cues();
+        let ov_len = ms_f(co - ci);
+        let (hci, _, _) = host.item.track.effective_cues();
+        let pos = ov.position.as_deref().unwrap_or("start");
+        let t = match pos {
+            "before_intro" => ms_f(host.item.track.intro_ms - hci).saturating_sub(ov_len),
+            "before_end" => host.mix_at.saturating_sub(ov_len),
+            "bridge" => host.mix_at.saturating_sub(ov_len / 2),
+            p if p.starts_with("custom:") => ms_f(p[7..].trim().parse::<i64>().unwrap_or(0)),
+            _ => 0,
+        };
+        t.max(host.pos)
     }
 
     fn mixer_loop(self: Arc<Self>, cmd_rx: Receiver<Cmd>) {
@@ -334,6 +405,10 @@ impl Engine {
         let mut frames_rendered: u64 = 0;
         let (mut lvl_l, mut lvl_r) = (0f32, 0f32);
         let mut duck = 1.0f32;
+        let mut pending: Vec<PendingOverlay> = Vec::new();
+        let mut instants_out: Option<OutputHandle> = None;
+        let mut instants_dev = String::new();
+        let mut inst_mix = vec![0f32; BLOCK * 2];
 
         loop {
             // --- příkazy
@@ -361,18 +436,20 @@ impl Engine {
                             v.segued = true;
                         }
                         stop_after = false;
-                        if let Some(v) = self.start_next(&mut preloaded) { voices.push(v); }
+                        pending.clear();
+                        if let Some((v, bed)) = self.start_next(&mut preloaded) { voices.push(v); if let Some(b) = bed { voices.push(b); } }
                     }
                     Cmd::StopAfterCurrent(b) => stop_after = b,
                     Cmd::Instant(t) => {
                         let mut item = QueueItem::new(t, "instant", "instant");
                         self.refresh(&mut item);
                         let v = self.make_voice(item.clone(), true, None);
+                        // instant má zahrát vždy, i když je engine zastavený
                         self.events.emit(Event::TrackStarted { item, channel: "overlay".into() });
                         voices.push(v);
                     }
                     Cmd::StopInstants => {
-                        for v in voices.iter_mut().filter(|v| v.overlay) {
+                        for v in voices.iter_mut().filter(|v| v.overlay && v.item.source == "instant") {
                             v.fade = Some(Fade { from: 1.0, to: 0.0, start: v.pos, len: 200 * rate / 1000 });
                             v.kill_after_fade = true;
                         }
@@ -428,18 +505,74 @@ impl Engine {
                             cur.fade = Some(Fade { from: 1.0, to: 0.0, start: cur.mix_at, len: cur.len - cur.mix_at });
                         }
                     }
-                    if let Some(v) = self.start_next(&mut preloaded) { voices.push(v); }
+                    if let Some((v, bed)) = self.start_next(&mut preloaded) { voices.push(v); if let Some(b) = bed { voices.push(b); } }
                 }
+            }
+
+            // --- sweepery / voice tracky na pozici přes skladbu
+            loop {
+                let front = { let q = self.queue.lock(); q.front().filter(|f| f.is_attached_overlay()).cloned() };
+                let Some(mut ov) = front else { break };
+                let Some(host) = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade && !v.segued) else { break };
+                self.queue.lock().pop_front();
+                self.refresh(&mut ov);
+                let trigger = Self::overlay_trigger(host, &ov, rate);
+                pending.push(PendingOverlay { host_id: host.item.id.clone(), trigger, item: ov });
+                self.events.emit(Event::QueueChanged);
+            }
+            if state == PlayState::Playing {
+                let mut k = 0;
+                while k < pending.len() {
+                    let host = voices.iter().find(|v| v.item.id == pending[k].host_id);
+                    let due = match host { Some(h) => h.pos + BLOCK as u64 >= pending[k].trigger, None => true };
+                    if due {
+                        let p = pending.remove(k);
+                        let v = self.make_voice(p.item.clone(), true, None);
+                        self.events.emit(Event::TrackStarted { item: p.item, channel: "overlay".into() });
+                        voices.push(v);
+                    } else { k += 1; }
+                }
+            }
+
+            // --- samostatný výstup pro instant jingly (Jazler: Instants, Output 3)
+            {
+                let want = self.cfg.read().audio.instants_device.clone();
+                if want != instants_dev {
+                    instants_dev = want.clone();
+                    instants_out = None;
+                    if !want.is_empty() && want != "none" && want != self.cfg.read().audio.output_device {
+                        match open_output(&want, rate, self.cfg.read().audio.buffer_ms) {
+                            Ok(h) if h.sample_rate == rate => instants_out = Some(h),
+                            Ok(h) => self.events.alert("warning", "instants_rate", format!("Výstup instantů {} běží na {} Hz – instanty hrají do hlavního výstupu", h.device_name, h.sample_rate)),
+                            Err(e) => self.events.alert("warning", "instants_output_unavailable", format!("Výstup instantů nedostupný: {e}")),
+                        }
+                    }
+                }
+                if instants_out.as_ref().map(|o| o.failed.load(Ordering::Relaxed)).unwrap_or(false) { instants_out = None; }
             }
 
             // --- mix
             mix.iter_mut().for_each(|s| *s = 0.0);
             let duck_target = if voices.iter().any(|v| v.overlay && v.item.track.kind().is_overlay_capable()) { db_to_lin(self.cfg.read().audio.duck_db) } else { 1.0 };
             duck += (duck_target - duck) * 0.15;
+            inst_mix.iter_mut().for_each(|s| *s = 0.0);
             for v in voices.iter_mut() {
                 if state == PlayState::Paused && !v.overlay { continue; }
                 let extra = if v.overlay { 1.0 } else { duck };
-                v.render(&mut mix, BLOCK, extra);
+                if v.item.source == "instant" && instants_out.is_some() { v.render(&mut inst_mix, BLOCK, 1.0); }
+                else { v.render(&mut mix, BLOCK, extra); }
+            }
+            if let Some(o) = instants_out.as_mut() {
+                for x in inst_mix.iter_mut() { *x = soft_clip(*x); }
+                if o.producer.slots() >= inst_mix.len() {
+                    if let Ok(mut chunk) = o.producer.write_chunk_uninit(inst_mix.len()) {
+                        let (a, b) = chunk.as_mut_slices();
+                        let (sa, sb) = inst_mix.split_at(a.len());
+                        for (d, s) in a.iter_mut().zip(sa) { d.write(*s); }
+                        for (d, s) in b.iter_mut().zip(sb) { d.write(*s); }
+                        unsafe { chunk.commit_all(); }
+                    }
+                }
             }
             let (mut pk_l, mut pk_r) = (0f32, 0f32);
             for fr in mix.chunks_exact_mut(2) {
@@ -504,6 +637,7 @@ impl Engine {
         let head = self.queue.lock().front().cloned();
         match (&head, preloaded.as_ref()) {
             (Some(h), Some((id, _))) if *id == h.id => {}
+            (Some(h), _) if h.stitch.is_some() || h.is_attached_overlay() => *preloaded = None,
             (Some(h), _) => {
                 let mut h = h.clone();
                 self.refresh(&mut h);
@@ -517,17 +651,21 @@ impl Engine {
         }
     }
 
-    fn start_next(&self, preloaded: &mut Option<(String, Prefetch)>) -> Option<Voice> {
+    fn start_next(&self, preloaded: &mut Option<(String, Prefetch)>) -> Option<(Voice, Option<Voice>)> {
         let mut item = self.queue.lock().pop_front()?;
         let mut pre = match preloaded.take() { Some((id, p)) if id == item.id => Some(p), _ => None };
         let before = item.track.effective_cues();
         self.refresh(&mut item);
         // analýza mohla mezitím doběhnout a změnit začátek → přednačtení zahodit
         if item.track.effective_cues().0 != before.0 { pre = None; }
-        let v = self.make_voice(item.clone(), false, pre);
-        self.events.emit(Event::TrackStarted { item, channel: "main".into() });
+        let (v, bed) = self.make_voice_full(item.clone(), false, pre);
+        // u stitcheru logujeme skutečně složený název
+        let mut logged = item;
+        logged.track.title = v.item.track.title.clone();
+        logged.track.duration_ms = v.item.track.duration_ms;
+        self.events.emit(Event::TrackStarted { item: logged, channel: "main".into() });
         self.events.emit(Event::QueueChanged);
-        Some(v)
+        Some((v, bed))
     }
 
     // --- operace s frontou (decky)

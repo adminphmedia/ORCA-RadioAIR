@@ -2,7 +2,7 @@
 //! CurrentAlbumImage.jpg a webhooky.
 
 use crate::config::Config;
-use crate::library::read_cover;
+use crate::library::cover_for;
 use crate::model::{QueueItem, Track};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -73,7 +73,7 @@ impl NowPlayingWriter {
         let _ = write_atomic(&dir.join("AirPlayNext.xml"), nxml.as_bytes());
 
         if cfg.nowplaying.export_cover {
-            match read_cover(Path::new(&current.path)) {
+            match cover_for(current) {
                 Some((data, mime)) => {
                     let ext = if mime.contains("png") { "png" } else { "jpg" };
                     let _ = std::fs::remove_file(dir.join(if ext == "png" { "CurrentAlbumImage.jpg" } else { "CurrentAlbumImage.png" }));

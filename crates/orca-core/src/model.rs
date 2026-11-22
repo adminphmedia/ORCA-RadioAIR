@@ -10,10 +10,12 @@ pub enum TrackKind {
     #[serde(rename = "voicetrack")]
     VoiceTrack,
     Asset,
+    /// Instant jingly (palety) – samostatná knihovna, na pad lze ale dát jakýkoli soubor.
+    Instant,
 }
 
 impl TrackKind {
-    pub const ALL: [TrackKind; 6] = [TrackKind::Song, TrackKind::Jingle, TrackKind::Spot, TrackKind::Sweeper, TrackKind::VoiceTrack, TrackKind::Asset];
+    pub const ALL: [TrackKind; 7] = [TrackKind::Song, TrackKind::Jingle, TrackKind::Spot, TrackKind::Sweeper, TrackKind::VoiceTrack, TrackKind::Asset, TrackKind::Instant];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -23,6 +25,7 @@ impl TrackKind {
             TrackKind::Sweeper => "sweeper",
             TrackKind::VoiceTrack => "voicetrack",
             TrackKind::Asset => "asset",
+            TrackKind::Instant => "instant",
         }
     }
 
@@ -34,12 +37,39 @@ impl TrackKind {
             "sweeper" => TrackKind::Sweeper,
             "voicetrack" => TrackKind::VoiceTrack,
             "asset" => TrackKind::Asset,
+            "instant" => TrackKind::Instant,
             _ => return None,
         })
     }
 
     /// Hraje přes jinou stopu (sweeper, voice track) – nepřeruší hlavní stopu.
     pub fn is_overlay_capable(&self) -> bool { matches!(self, TrackKind::Sweeper | TrackKind::VoiceTrack) }
+
+    /// Název podsložky v kořenové složce knihovny.
+    pub fn folder_name(&self) -> &'static str {
+        match self {
+            TrackKind::Song => "Songs",
+            TrackKind::Jingle => "Jingles",
+            TrackKind::Spot => "Spots",
+            TrackKind::Sweeper => "Sweepers",
+            TrackKind::VoiceTrack => "Voice Tracks",
+            TrackKind::Asset => "Assets",
+            TrackKind::Instant => "Instant Jingles",
+        }
+    }
+
+    /// Výchozí prefix playlister kódu (Jazler: "library settings → prefix").
+    pub fn default_prefix(&self) -> &'static str {
+        match self {
+            TrackKind::Song => "S",
+            TrackKind::Jingle => "J",
+            TrackKind::Spot => "C",
+            TrackKind::Sweeper => "W",
+            TrackKind::VoiceTrack => "V",
+            TrackKind::Asset => "A",
+            TrackKind::Instant => "I",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -74,6 +104,18 @@ pub struct Track {
     pub isrc: String,
     pub composer: String,
     pub publisher: String,
+    /// Vocal (Jazler: muž / žena / duet / instrumentál …) – hodnoty z číselníku kategorií.
+    pub vocal: String,
+    /// Properties – volné štítky oddělené čárkou (tempo, nálada …).
+    pub properties: String,
+    /// Barva položky v seznamech (#rrggbb), prázdné = barva kategorie/typu.
+    pub color: String,
+    pub comment: String,
+    /// Vlastní rozestup této skladby v minutách (přebíjí globální pravidlo).
+    pub separation_min: Option<i64>,
+    /// Vlastní obal (cesta k obrázku), jinak se bere z tagu.
+    pub cover_path: Option<String>,
+    pub bookmarked: bool,
     pub added_at: String,
     pub updated_at: String,
     pub last_played_at: Option<String>,
@@ -111,17 +153,31 @@ impl Track {
 pub struct QueueItem {
     pub id: String,
     pub track: Track,
-    /// "auto", "manual", "playlist", "instant"
+    /// "auto", "manual", "playlist", "instant", "break", "stitcher"
     pub source: String,
     /// Proč byla položka vybrána (Jazler Log Viewer: "proč se to hrálo").
     pub reason: String,
     /// Odhadovaný čas začátku (ISO).
     pub eta: Option<String>,
+    /// Sweeper / voice track přes předchozí položku: start | before_intro | before_end | bridge | independent | custom:<ms>
+    #[serde(default)]
+    pub position: Option<String>,
+    /// Stitcher: hooks | time | news
+    #[serde(default)]
+    pub stitch: Option<String>,
+    /// Reklamní blok, ke kterému položka patří ("YYYY-MM-DD HH:MM").
+    #[serde(default)]
+    pub break_ref: Option<String>,
 }
 
 impl QueueItem {
+    /// Bude hrát přes předchozí položku (ne samostatně v řadě)?
+    pub fn is_attached_overlay(&self) -> bool {
+        self.track.kind().is_overlay_capable() && self.position.as_deref().map(|p| p != "independent").unwrap_or(false)
+    }
+
     pub fn new(track: Track, source: &str, reason: impl Into<String>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None }
+        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None }
     }
 }
 

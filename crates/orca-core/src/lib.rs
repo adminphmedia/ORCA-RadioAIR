@@ -3,6 +3,7 @@
 pub mod analysis;
 pub mod audio_out;
 pub mod automation;
+pub mod catalog;
 pub mod config;
 pub mod db;
 pub mod decode;
@@ -12,8 +13,11 @@ pub mod events;
 pub mod library;
 pub mod model;
 pub mod nowplaying;
+pub mod recorder;
 pub mod reports;
 pub mod rotation;
+pub mod spots;
+pub mod stitcher;
 
 use anyhow::Result;
 use parking_lot::RwLock;
@@ -41,28 +45,40 @@ pub struct Orca {
     pub engine: Arc<engine::Engine>,
     pub encoders: Arc<encoder::EncoderManager>,
     pub automation: Arc<automation::Automation>,
+    pub recorder: Arc<recorder::Recorder>,
 }
 
 impl Orca {
     pub fn start(data_dir: &Path) -> Result<Arc<Orca>> {
         std::fs::create_dir_all(data_dir)?;
         let config_path = data_dir.join("orca.toml");
-        let cfg = Arc::new(RwLock::new(Config::load_or_create(&config_path)?));
+        let mut cfg0 = Config::load_or_create(&config_path)?;
+        if library::ensure_kind_folders(&mut cfg0, data_dir) { cfg0.save(&config_path)?; }
+        let cfg = Arc::new(RwLock::new(cfg0));
         let db = Arc::new(db::Db::open(&data_dir.join("orca.db"))?);
         let events = events::EventBus::new();
-        let library = library::Library::new(db.clone(), cfg.clone(), events.clone());
+        let library = library::Library::new(db.clone(), cfg.clone(), events.clone(), data_dir.to_path_buf());
         let engine = engine::Engine::start(cfg.clone(), events.clone());
         { let db = db.clone(); engine.set_resolver(Arc::new(move |id| db.get_track(id).ok().flatten())); }
+        {
+            let (db, cfg) = (db.clone(), cfg.clone());
+            engine.set_stitch_resolver(Arc::new(move |kind, upcoming| {
+                let c = cfg.read().clone();
+                stitcher::resolve(&db, &c, kind, upcoming, automation::now_local(&c))
+            }));
+        }
+        if let Err(e) = catalog::ensure_default_palette(&db) { log::warn!("palety: {e}"); }
         let encoders = encoder::EncoderManager::new(engine.clone(), cfg.clone(), events.clone());
         let automation = automation::Automation::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), events.clone(), data_dir.to_path_buf());
         if let Err(e) = library.start_watching() { events.alert("error", "watch_failed", e.to_string()); }
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()) }))
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).
-    pub fn apply_config(&self, new: Config) -> Result<()> {
+    pub fn apply_config(&self, mut new: Config) -> Result<()> {
+        library::ensure_kind_folders(&mut new, &self.data_dir);
         let old = self.cfg.read().clone();
         new.save(&self.config_path)?;
         *self.cfg.write() = new.clone();

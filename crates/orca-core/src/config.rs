@@ -20,6 +20,10 @@ pub struct Config {
     pub api: ApiConfig,
     /// Cesta k ffmpeg; prázdné = vedle programu, pak PATH.
     pub ffmpeg_path: String,
+    pub library: LibraryConfig,
+    pub spots: SpotsConfig,
+    pub stitcher: StitcherConfig,
+    pub recorder: RecorderConfig,
 }
 
 impl Default for Config {
@@ -34,6 +38,10 @@ impl Default for Config {
             nowplaying: NowPlayingConfig::default(),
             api: ApiConfig::default(),
             ffmpeg_path: String::new(),
+            library: LibraryConfig::default(),
+            spots: SpotsConfig::default(),
+            stitcher: StitcherConfig::default(),
+            recorder: RecorderConfig::default(),
         }
     }
 }
@@ -152,6 +160,7 @@ impl Default for AutoCueConfig {
         m.insert(TrackKind::Sweeper, CueThresholds { start_db: -50.0, end_db: -50.0, mix_db: None });
         m.insert(TrackKind::VoiceTrack, CueThresholds { start_db: -50.0, end_db: -50.0, mix_db: None });
         m.insert(TrackKind::Asset, CueThresholds { start_db: -60.0, end_db: -60.0, mix_db: None });
+        m.insert(TrackKind::Instant, CueThresholds { start_db: -50.0, end_db: -50.0, mix_db: None });
         Self { per_kind: m }
     }
 }
@@ -168,6 +177,12 @@ pub struct ClockStep {
     /// Prázdné = libovolná kategorie.
     #[serde(default)]
     pub category: String,
+    /// Sweeper / voice track: pozice přes skladbu (start, before_intro, before_end, bridge, independent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    /// Krok Stitcheru místo souboru: hooks | time | news
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stitch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,7 +197,7 @@ pub struct Clock {
 
 impl Default for Clock {
     fn default() -> Self {
-        Self { name: "Default".into(), color: "#3b82f6".into(), steps: vec![ClockStep { kind: TrackKind::Song, category: String::new() }], backup_category: String::new() }
+        Self { name: "Default".into(), color: "#3b82f6".into(), steps: vec![ClockStep { kind: TrackKind::Song, category: String::new(), position: None, stitch: None }], backup_category: String::new() }
     }
 }
 
@@ -300,6 +315,7 @@ impl Default for NowPlayingConfig {
         m.insert(TrackKind::Sweeper, "NO-UPDATE".into());
         m.insert(TrackKind::VoiceTrack, "NO-UPDATE".into());
         m.insert(TrackKind::Asset, String::new());
+        m.insert(TrackKind::Instant, "NO-UPDATE".into());
         Self { enabled: true, export_dir: PathBuf::new(), per_kind: m, history_size: 10, next_size: 5, export_cover: true, webhooks: vec![] }
     }
 }
@@ -343,4 +359,205 @@ impl Config {
     pub fn clock_by_name(&self, name: &str) -> Option<&Clock> {
         self.auto.clocks.iter().find(|c| c.name == name)
     }
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Knihovna
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LibraryConfig {
+    /// Kořenová složka knihovny. Prázdné = <data>/Library. Pro každý typ v ní vznikne podsložka
+    /// (Songs, Spots, Jingles …) a ta se automaticky sleduje.
+    pub root: PathBuf,
+    /// Automaticky vytvořit a sledovat podsložky pro všechny typy.
+    pub auto_folders: bool,
+    /// Prefix playlister kódu pro každý typ (Jazler library settings).
+    pub prefixes: BTreeMap<TrackKind, String>,
+    /// Šablona exportu pro playlister: {CODE} {ARTIST} {TITLE} {ALBUM} {CATEGORY} {CATEGORY2} {CATEGORY3}
+    /// {DURATION} {DURATION_S} {FILENAME} {PATH} {ISRC} {YEAR}
+    pub export_template: String,
+    /// Při přidání souboru se stejným názvem jako už v knihovně je: "rename" | "replace" | "skip"
+    pub on_duplicate: String,
+}
+
+impl Default for LibraryConfig {
+    fn default() -> Self {
+        Self {
+            root: PathBuf::new(),
+            auto_folders: true,
+            prefixes: TrackKind::ALL.iter().map(|k| (*k, k.default_prefix().to_string())).collect(),
+            export_template: "{CODE};{ARTIST};{TITLE};{DURATION};{CATEGORY};{FILENAME}".into(),
+            on_duplicate: "rename".into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Spoty / reklamy
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BreakDef {
+    /// "HH:MM"
+    pub time: String,
+    /// start = blok začíná v daný čas, end = blok v daný čas končí,
+    /// time = položky s prioritou "ohlášení času" hrají co nejblíž danému času
+    pub position: String,
+    /// Viditelný při programování kampaní.
+    pub visible: bool,
+    /// Start immediately (Po…Ne): v daný čas stáhne hrající skladbu a blok začne přesně.
+    pub start_immediately: [bool; 7],
+    /// Limit délky bloku v sekundách (0 = bez limitu) – pro přehled bloků.
+    pub max_duration_s: u32,
+    pub name: String,
+}
+
+impl Default for BreakDef {
+    fn default() -> Self {
+        Self { time: "00:00".into(), position: "start".into(), visible: true, start_immediately: [false; 7], max_duration_s: 0, name: String::new() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PriorityDef {
+    pub num: u32,
+    pub name: String,
+    /// "" | "time" (ohlášení času) | "playlister" | "optional" (hraje jen když v bloku je reklama)
+    pub special: String,
+    pub color: String,
+}
+
+impl Default for PriorityDef {
+    fn default() -> Self { Self { num: 1, name: String::new(), special: String::new(), color: String::new() } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotsConfig {
+    pub breaks: Vec<BreakDef>,
+    pub priorities: Vec<PriorityDef>,
+    /// Jak dlouho dopředu se bloky vkládají do decků (min).
+    pub lookahead_min: u32,
+    /// Vkládat bloky automaticky v režimu Auto.
+    pub auto_insert: bool,
+    /// Složka pro automatický import TXT plánů z traffic softwaru (YYYYMMDD.txt).
+    pub playlister_import_dir: PathBuf,
+    /// Kategorie kampaní (Reklama, Station ID, Upoutávka …).
+    pub campaign_categories: Vec<String>,
+}
+
+impl Default for SpotsConfig {
+    fn default() -> Self {
+        let mut breaks = vec![];
+        for h in 0..24 {
+            for m in [0, 30] {
+                breaks.push(BreakDef { time: format!("{h:02}:{m:02}"), ..Default::default() });
+            }
+        }
+        let p = |num: u32, name: &str, special: &str| PriorityDef { num, name: name.into(), special: special.into(), color: String::new() };
+        Self {
+            breaks,
+            priorities: vec![
+                p(1, "Station ID", ""),
+                p(2, "Začátek reklam", "optional"),
+                p(3, "Ohlášení času", "time"),
+                p(4, "Reklamy", ""),
+                p(5, "Reklamy (traffic)", "playlister"),
+                p(6, "Počasí", ""),
+                p(7, "Zprávy", ""),
+                p(8, "Konec reklam", "optional"),
+            ],
+            lookahead_min: 60,
+            auto_insert: true,
+            playlister_import_dir: PathBuf::new(),
+            campaign_categories: vec!["Reklama".into(), "Station ID".into(), "Upoutávka".into(), "Sponzoring".into(), "Ohlášení".into()],
+        }
+    }
+}
+
+impl SpotsConfig {
+    pub fn priority(&self, num: u32) -> Option<&PriorityDef> { self.priorities.iter().find(|p| p.num == num) }
+    pub fn special_priority(&self, special: &str) -> Option<u32> { self.priorities.iter().find(|p| p.special == special).map(|p| p.num) }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stitcher
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StitchHooksConfig {
+    pub opening_track_id: Option<i64>,
+    pub separator_track_id: Option<i64>,
+    pub closing_track_id: Option<i64>,
+    pub default_track_id: Option<i64>,
+    /// Kolik následujících skladeb ohlásit.
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StitchTimeConfig {
+    pub opening_track_id: Option<i64>,
+    pub bed_track_id: Option<i64>,
+    pub closing_track_id: Option<i64>,
+    pub default_track_id: Option<i64>,
+    /// Kategorie se soubory hodin: název souboru obsahuje číslo hodiny (0–23), např. "HOD_16.wav".
+    pub hours_kind: Option<TrackKind>,
+    pub hours_category: String,
+    /// Kategorie se soubory minut (0–59), např. "MIN_04.wav". Minuta 0 se vynechá, pokud soubor chybí.
+    pub minutes_kind: Option<TrackKind>,
+    pub minutes_category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StitchNewsConfig {
+    pub opening_track_id: Option<i64>,
+    pub bed_track_id: Option<i64>,
+    pub closing_track_id: Option<i64>,
+    pub default_track_id: Option<i64>,
+    /// Zprávy = nejnovější soubor v této knihovně a kategorii.
+    pub news_kind: Option<TrackKind>,
+    pub news_category: String,
+    /// Ztlumení podkresu pod hlasem (dB).
+    pub bed_db: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StitcherConfig {
+    pub hooks: StitchHooksConfig,
+    pub time: StitchTimeConfig,
+    pub news: StitchNewsConfig,
+}
+
+impl Default for StitcherConfig {
+    fn default() -> Self {
+        Self {
+            hooks: StitchHooksConfig { count: 3, ..Default::default() },
+            time: StitchTimeConfig { hours_kind: Some(TrackKind::Asset), hours_category: "Hodiny".into(), minutes_kind: Some(TrackKind::Asset), minutes_category: "Minuty".into(), ..Default::default() },
+            news: StitchNewsConfig { news_kind: Some(TrackKind::Asset), news_category: "Zprávy".into(), bed_db: -12.0, ..Default::default() },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Studio – nahrávání moderátorských vstupů
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecorderConfig {
+    /// Vstupní zařízení; prázdné = výchozí.
+    pub input_device: String,
+    pub default_kind: TrackKind,
+    pub default_category: String,
+    /// Mono nahrávka (mikrofon) – menší soubory.
+    pub mono: bool,
+}
+
+impl Default for RecorderConfig {
+    fn default() -> Self { Self { input_device: String::new(), default_kind: TrackKind::VoiceTrack, default_category: "Studio".into(), mono: true } }
 }

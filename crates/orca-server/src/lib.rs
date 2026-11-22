@@ -22,19 +22,21 @@ use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-type St = Arc<Orca>;
-type ApiResult = Result<Response, ApiError>;
+pub(crate) type St = Arc<Orca>;
+pub(crate) type ApiResult = Result<Response, ApiError>;
 
-pub struct ApiError(StatusCode, String);
+mod ext;
+
+pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response { (self.0, Json(json!({"error": self.1}))).into_response() }
 }
 impl<E: std::fmt::Display> From<E> for ApiError {
     fn from(e: E) -> Self { ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()) }
 }
-fn not_found(what: &str) -> ApiError { ApiError(StatusCode::NOT_FOUND, format!("{what} nenalezeno")) }
-fn bad(msg: &str) -> ApiError { ApiError(StatusCode::BAD_REQUEST, msg.into()) }
-fn ok() -> ApiResult { Ok(Json(json!({"ok": true})).into_response()) }
+pub(crate) fn not_found(what: &str) -> ApiError { ApiError(StatusCode::NOT_FOUND, format!("{what} nenalezeno")) }
+pub(crate) fn bad(msg: &str) -> ApiError { ApiError(StatusCode::BAD_REQUEST, msg.into()) }
+pub(crate) fn ok() -> ApiResult { Ok(Json(json!({"ok": true})).into_response()) }
 
 const FALLBACK_UI: &str = include_str!("fallback_ui.html");
 
@@ -71,6 +73,7 @@ pub fn router(orca: St) -> Router {
         .route("/audio/devices", get(audio_devices))
         .route("/encoders", get(encoders_get))
         .route("/encoders/{id}/{action}", post(encoder_action))
+        .merge(ext::routes())
         .layer(middleware::from_fn_with_state(orca.clone(), auth));
 
     let ui_dir = {
@@ -152,10 +155,11 @@ async fn set_mode(State(o): State<St>, Json(b): Json<ModeBody>) -> ApiResult { o
 async fn queue_get(State(o): State<St>) -> Json<Vec<QueueItem>> { Json(o.automation.queue_with_eta()) }
 
 #[derive(Deserialize)]
-struct QueueAdd { track_id: i64, position: Option<usize> }
+struct QueueAdd { track_id: i64, position: Option<usize>, overlay_position: Option<String> }
 async fn queue_add(State(o): State<St>, Json(b): Json<QueueAdd>) -> ApiResult {
     let t = o.db.get_track(b.track_id)?.ok_or_else(|| not_found("skladba"))?;
-    let item = QueueItem::new(t, "manual", "přidáno ručně");
+    let mut item = QueueItem::new(t, "manual", "přidáno ručně");
+    if item.track.kind().is_overlay_capable() { item.position = b.overlay_position.clone(); }
     let id = item.id.clone();
     o.engine.queue_push(item, b.position);
     Ok(Json(json!({"ok": true, "id": id})).into_response())

@@ -47,7 +47,7 @@ impl Automation {
         });
         let rx = events.subscribe();
         { let a = a.clone(); std::thread::Builder::new().name("orca-auto-events".into()).spawn(move || { while let Ok(ev) = rx.recv() { a.on_event(ev); } }).ok(); }
-        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.fill_queue(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
+        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.breaks_tick(); a.fill_queue(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
         a
     }
 
@@ -67,12 +67,107 @@ impl Automation {
             t += chrono::Duration::milliseconds((cur.mix_at_ms - cur.position_ms).max(0));
         }
         let mut q = self.engine.queue_snapshot();
+        let mut last_start = t;
         for it in q.iter_mut() {
+            if it.is_attached_overlay() {
+                // hraje přes předchozí položku – čas neposouvá
+                it.eta = Some(last_start.to_rfc3339());
+                continue;
+            }
             it.eta = Some(t.to_rfc3339());
+            last_start = t;
             let (ci, mix, _) = it.track.effective_cues();
             t += chrono::Duration::milliseconds((mix - ci).max(0));
         }
         q
+    }
+
+    /// Kdy dohraje poslední položka fronty.
+    fn queue_end(&self, q: &[QueueItem], cfg: &Config) -> DateTime<Local> {
+        let parse = |s: &str| DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Local));
+        match q.iter().rev().find(|i| !i.is_attached_overlay()) {
+            Some(last) => {
+                let eta = last.eta.as_deref().and_then(parse).unwrap_or_else(|| now_local(cfg));
+                let (ci, mix, _) = last.track.effective_cues();
+                eta + chrono::Duration::milliseconds((mix - ci).max(0))
+            }
+            None => {
+                let st = self.engine.snapshot();
+                now_local(cfg) + chrono::Duration::milliseconds(st.current.map(|c| (c.mix_at_ms - c.position_ms).max(0)).unwrap_or(0))
+            }
+        }
+    }
+
+    /// Reklamní bloky: vložení do decků v pravý čas (nebo okamžitý start se stažením skladby).
+    fn breaks_tick(&self) {
+        let cfg = self.cfg.read().clone();
+        if !cfg.spots.auto_insert || self.mode() != Mode::Auto { return; }
+        let now = now_local(&cfg);
+        let today = now.date_naive();
+        for date in [today, today.succ_opt().unwrap_or(today)] {
+            for def in &cfg.spots.breaks {
+                let Ok(t) = chrono::NaiveTime::parse_from_str(&def.time, "%H:%M") else { continue };
+                let Some(bdt) = date.and_time(t).and_local_timezone(Local).single() else { continue };
+                let bdt = bdt; // čas bloku v čase stanice
+                if bdt < now - chrono::Duration::seconds(60) || bdt > now + chrono::Duration::minutes(cfg.spots.lookahead_min as i64) { continue; }
+                let date_s = date.format("%Y-%m-%d").to_string();
+                let preview = match crate::spots::build_block(&self.db, &cfg, date, def, false) { Ok(b) => b, Err(e) => { log::error!("blok {}: {e}", def.time); continue; } };
+                if preview.inserted { continue; }
+                if preview.items.is_empty() { let _ = crate::spots::mark_inserted(&self.db, &date_s, &def.time); continue; }
+                let to_items = |blk: &crate::spots::BreakBlock| -> Vec<QueueItem> {
+                    blk.items.iter().map(|bi| {
+                        let reason = format!("Reklamní blok {} • priorita {} {} • {}", blk.time, bi.priority, bi.priority_name, bi.campaign);
+                        let mut q = QueueItem::new(bi.track.clone(), "break", reason);
+                        q.break_ref = Some(crate::spots::break_key(&blk.date, &blk.time));
+                        q
+                    }).collect()
+                };
+                if preview.start_immediately {
+                    if now + chrono::Duration::milliseconds(300) < bdt { continue; }
+                    let Ok(blk) = crate::spots::build_block(&self.db, &cfg, date, def, true) else { continue };
+                    for (i, it) in to_items(&blk).into_iter().enumerate() { self.engine.queue_push(it, Some(i)); }
+                    let _ = crate::spots::mark_inserted(&self.db, &date_s, &def.time);
+                    self.engine.send(crate::engine::Cmd::Next);
+                    log::info!("reklamní blok {} spuštěn okamžitě ({} položek)", def.time, blk.items.len());
+                    continue;
+                }
+                let target = match def.position.as_str() {
+                    "end" => bdt - chrono::Duration::milliseconds(preview.duration_ms),
+                    "time" => bdt - chrono::Duration::milliseconds(preview.time_offset_ms),
+                    _ => bdt,
+                };
+                let q = self.queue_with_eta();
+                let end = self.queue_end(&q, &cfg);
+                // fronta ještě nesahá k času bloku → počkáme (automatika ji průběžně doplňuje)
+                if end < target { continue; }
+                // nejbližší hranice mezi položkami k času bloku (včetně konce fronty)
+                let parse = |s: &str| DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Local));
+                let mut bounds: Vec<(usize, DateTime<Local>)> = q.iter().enumerate()
+                    .filter(|(_, i)| !i.is_attached_overlay())
+                    .filter_map(|(k, i)| i.eta.as_deref().and_then(parse).map(|e| (k, e))).collect();
+                bounds.push((q.len(), end));
+                let idx = bounds.iter().min_by_key(|(_, e)| (*e - target).num_milliseconds().abs()).map(|(k, _)| *k).unwrap_or(q.len());
+                let Ok(blk) = crate::spots::build_block(&self.db, &cfg, date, def, true) else { continue };
+                for (k, it) in to_items(&blk).into_iter().enumerate() { self.engine.queue_push(it, Some(idx + k)); }
+                let _ = crate::spots::mark_inserted(&self.db, &date_s, &def.time);
+                log::info!("reklamní blok {} vložen na pozici {idx} ({} položek)", def.time, blk.items.len());
+            }
+        }
+    }
+
+    /// Ruční vložení bloku hned jako další (i v režimu Manual).
+    pub fn insert_break_now(&self, date: chrono::NaiveDate, time: &str) -> anyhow::Result<usize> {
+        let cfg = self.cfg.read().clone();
+        let def = cfg.spots.breaks.iter().find(|b| b.time == time).cloned().unwrap_or(crate::config::BreakDef { time: time.to_string(), ..Default::default() });
+        let blk = crate::spots::build_block(&self.db, &cfg, date, &def, true)?;
+        let n = blk.items.len();
+        for (i, bi) in blk.items.iter().enumerate() {
+            let mut q = QueueItem::new(bi.track.clone(), "break", format!("Reklamní blok {} (vložen ručně) • priorita {} {} • {}", blk.time, bi.priority, bi.priority_name, bi.campaign));
+            q.break_ref = Some(crate::spots::break_key(&blk.date, &blk.time));
+            self.engine.queue_push(q, Some(i));
+        }
+        crate::spots::mark_inserted(&self.db, &blk.date, &blk.time)?;
+        Ok(n)
     }
 
     fn fill_queue(&self) {
@@ -83,14 +178,7 @@ impl Automation {
             guard += 1;
             let q = self.queue_with_eta();
             // čas, kdy začne nově přidaná položka → podle něj vybereme clock
-            let slot_time = match q.last() {
-                Some(last) => {
-                    let eta = last.eta.as_deref().and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&Local)).unwrap_or_else(|| now_local(&cfg));
-                    let (ci, mix, _) = last.track.effective_cues();
-                    eta + chrono::Duration::milliseconds((mix - ci).max(0))
-                }
-                None => now_local(&cfg),
-            };
+            let slot_time = if q.is_empty() { now_local(&cfg) } else { self.queue_end(&q, &cfg) };
             let Some(clock) = clock_for(&cfg, &slot_time) else { return };
             if clock.steps.is_empty() { return; }
             let key = format!("{}|{}", grid_key(&slot_time), clock.name);
@@ -102,13 +190,22 @@ impl Automation {
                 i
             };
             let step = &clock.steps[step_idx];
+            if let Some(kind) = &step.stitch {
+                let est = match crate::stitcher::resolve(&self.db, &cfg, kind, &q, slot_time) { Ok(p) => p.total_ms(), Err(_) => 0 };
+                if est > 0 {
+                    self.engine.queue_push(crate::stitcher::queue_item(kind, est, &format!("clock '{}', krok {}: Stitcher", clock.name, step_idx + 1)), None);
+                }
+                continue;
+            }
             let mut excl = Exclusions { track_ids: HashSet::new(), artists: HashSet::new() };
             for it in &q { excl.track_ids.insert(it.track.id); if !it.track.artist.is_empty() && it.track.kind() == crate::model::TrackKind::Song { excl.artists.insert(it.track.artist.to_lowercase()); } }
             if let Some(cur) = self.engine.snapshot().current { excl.track_ids.insert(cur.item.track.id); if !cur.item.track.artist.is_empty() { excl.artists.insert(cur.item.track.artist.to_lowercase()); } }
             match select(&self.db, &cfg.auto, step, &clock.backup_category, &excl) {
                 Ok(Some((track, reason))) => {
                     let reason = format!("{} (clock '{}', krok {})", reason, clock.name, step_idx + 1);
-                    self.engine.queue_push(QueueItem::new(track, "auto", reason), None);
+                    let mut item = QueueItem::new(track, "auto", reason);
+                    if step.kind.is_overlay_capable() { item.position = step.position.clone(); }
+                    self.engine.queue_push(item, None);
                 }
                 Ok(None) => {
                     let mut last = self.last_no_tracks_alert.lock();

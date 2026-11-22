@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 const RESCAN_EVERY: Duration = Duration::from_secs(600);
 
 pub struct Library {
+    pub data_dir: PathBuf,
     db: Arc<Db>,
     cfg: Arc<RwLock<Config>>,
     events: EventBus,
@@ -94,6 +95,60 @@ pub fn read_cover(path: &Path) -> Option<(Vec<u8>, String)> {
     None
 }
 
+pub const TRASH_DIR: &str = "_Trash";
+
+pub fn in_trash(p: &Path) -> bool { p.components().any(|c| c.as_os_str() == TRASH_DIR) }
+
+/// Kořenová složka knihovny.
+pub fn library_root(cfg: &Config, data_dir: &Path) -> PathBuf {
+    if cfg.library.root.as_os_str().is_empty() { data_dir.join("Library") } else { cfg.library.root.clone() }
+}
+
+/// Vytvoří podsložky Songs, Spots, Jingles … a zaregistruje je jako sledované. Vrací true, pokud se změnila konfigurace.
+pub fn ensure_kind_folders(cfg: &mut Config, data_dir: &Path) -> bool {
+    if !cfg.library.auto_folders { return false; }
+    let root = library_root(cfg, data_dir);
+    let mut changed = false;
+    for kind in TrackKind::ALL {
+        let dir = root.join(kind.folder_name());
+        if let Err(e) = std::fs::create_dir_all(&dir) { log::warn!("{}: {e}", dir.display()); continue; }
+        if !cfg.watch_folders.iter().any(|w| w.path == dir) {
+            cfg.watch_folders.push(WatchFolder {
+                id: format!("lib-{}", kind.as_str()), path: dir, kind, category: String::new(), category_from_subfolder: true, enabled: true,
+            });
+            changed = true;
+        }
+    }
+    let _ = std::fs::create_dir_all(root.join(TRASH_DIR));
+    changed
+}
+
+/// Bezpečný název souboru/složky (bez lomítek a zakázaných znaků Windows).
+pub fn sanitize(name: &str) -> String {
+    let s: String = name.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+    let s = s.trim().trim_matches('.').to_string();
+    if s.is_empty() { "soubor".into() } else { s }
+}
+
+/// Volná cesta v cílové složce podle politiky duplicit (rename | replace | skip).
+pub fn unique_path(dir: &Path, filename: &str, policy: &str) -> Option<PathBuf> {
+    let p = dir.join(filename);
+    if !p.exists() || policy == "replace" { return Some(p); }
+    if policy == "skip" { return None; }
+    let stem = Path::new(filename).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = Path::new(filename).extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+    (2..10_000).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|c| !c.exists())
+}
+
+use crate::model::{Track, TrackKind};
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ImportReport {
+    pub added: Vec<Track>,
+    pub skipped: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 fn category_for(path: &Path, wf: &WatchFolder) -> String {
     if wf.category_from_subfolder {
         if let Ok(rel) = path.strip_prefix(&wf.path) {
@@ -107,10 +162,10 @@ fn category_for(path: &Path, wf: &WatchFolder) -> String {
 }
 
 impl Library {
-    pub fn new(db: Arc<Db>, cfg: Arc<RwLock<Config>>, events: EventBus) -> Arc<Self> {
+    pub fn new(db: Arc<Db>, cfg: Arc<RwLock<Config>>, events: EventBus, data_dir: PathBuf) -> Arc<Self> {
         let (atx, arx) = unbounded();
         let (ftx, frx) = unbounded();
-        let lib = Arc::new(Self { db, cfg, events, analysis_tx: atx, fs_tx: ftx, watcher: Mutex::new(None) });
+        let lib = Arc::new(Self { data_dir, db, cfg, events, analysis_tx: atx, fs_tx: ftx, watcher: Mutex::new(None) });
         {
             let l = lib.clone();
             std::thread::Builder::new().name("orca-analysis".into()).spawn(move || l.analysis_worker(arx)).unwrap();
@@ -131,7 +186,7 @@ impl Library {
     /// Zpracuje jeden soubor (nový/změněný). Vrací (added, updated).
     pub fn index_file(&self, path: &Path) -> Result<(usize, usize)> {
         let Some(wf) = self.folder_for(path) else { return Ok((0, 0)) };
-        if !is_supported(path) { return Ok((0, 0)); }
+        if !is_supported(path) || in_trash(path) { return Ok((0, 0)); }
         // rychlá kontrola beze čtení tagů
         if let (Some((mtime, size)), Some((_, m0, s0, missing))) = (file_stamp(path), self.db.track_by_path(&path_str(path))?) {
             if m0 == mtime && s0 == size && !missing { return Ok((0, 0)); }
@@ -157,7 +212,7 @@ impl Library {
             let mut seen = HashSet::new();
             for entry in walkdir::WalkDir::new(&wf.path).follow_links(true).into_iter().filter_map(|e| e.ok()) {
                 let p = entry.path();
-                if !entry.file_type().is_file() || !is_supported(p) { continue; }
+                if !entry.file_type().is_file() || !is_supported(p) || in_trash(p) { continue; }
                 seen.insert(path_str(p));
                 match self.index_file(p) {
                     Ok((a, u)) => { st.added += a; st.updated += u; }
@@ -260,4 +315,160 @@ impl Library {
             }
         }
     }
+}
+
+
+impl Library {
+    pub fn root(&self) -> PathBuf { library_root(&self.cfg.read(), &self.data_dir) }
+
+    /// Cílová složka pro nový soubor daného typu a kategorie.
+    pub fn target_dir(&self, kind: TrackKind, category: &str) -> PathBuf {
+        let cfg = self.cfg.read();
+        let root = library_root(&cfg, &self.data_dir);
+        let wf = cfg.watch_folders.iter().filter(|w| w.enabled && w.kind == kind)
+            .min_by_key(|w| if w.path.starts_with(&root) { 0 } else { 1 }).cloned();
+        let (base, sub) = match wf {
+            Some(w) => (w.path.clone(), w.category_from_subfolder),
+            None => (root.join(kind.folder_name()), true),
+        };
+        let dir = if sub && !category.trim().is_empty() { base.join(sanitize(category)) } else { base };
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// Okamžitě zařadí soubor do knihovny (bez čekání na sledování složek) a vrátí záznam.
+    pub fn register_file(&self, path: &Path, category: &str) -> Result<Option<Track>> {
+        self.index_file(path)?;
+        let Some((id, _, _, _)) = self.db.track_by_path(&path_str(path))? else { return Ok(None) };
+        if !category.is_empty() {
+            let cur = self.db.get_track(id)?.map(|t| t.category).unwrap_or_default();
+            if cur != category {
+                self.db.patch_track(id, &crate::db::TrackPatch { category: Some(category.to_string()), ..Default::default() })?;
+            }
+        }
+        self.queue_analysis(id);
+        Ok(self.db.get_track(id)?)
+    }
+
+    /// Přidá soubory nebo celé složky (rekurzivně). Soubory mimo sledované složky se zkopírují do knihovny.
+    pub fn add_paths(&self, sources: &[PathBuf], kind: TrackKind, category: &str) -> ImportReport {
+        let mut rep = ImportReport::default();
+        let policy = self.cfg.read().library.on_duplicate.clone();
+        let mut files = vec![];
+        for s in sources {
+            if s.is_dir() {
+                for e in walkdir::WalkDir::new(s).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+                    if e.file_type().is_file() && is_supported(e.path()) { files.push(e.path().to_path_buf()); }
+                }
+            } else if s.is_file() {
+                if is_supported(s) { files.push(s.clone()); } else { rep.skipped.push(format!("{}: nepodporovaný formát", s.display())); }
+            } else {
+                rep.errors.push(format!("{}: neexistuje", s.display()));
+            }
+        }
+        for f in files {
+            // už je ve sledované složce stejného typu → jen zaregistrovat
+            if let Some(wf) = self.folder_for(&f) {
+                if wf.kind == kind {
+                    match self.register_file(&f, category) {
+                        Ok(Some(t)) => rep.added.push(t),
+                        Ok(None) => rep.skipped.push(f.display().to_string()),
+                        Err(e) => rep.errors.push(format!("{}: {e}", f.display())),
+                    }
+                    continue;
+                }
+            }
+            let dir = self.target_dir(kind, category);
+            let name = sanitize(&f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+            let Some(dest) = unique_path(&dir, &name, &policy) else { rep.skipped.push(format!("{name}: už existuje")); continue };
+            if let Err(e) = std::fs::copy(&f, &dest) { rep.errors.push(format!("{}: {e}", f.display())); continue; }
+            match self.register_file(&dest, category) {
+                Ok(Some(t)) => rep.added.push(t),
+                Ok(None) => rep.skipped.push(dest.display().to_string()),
+                Err(e) => rep.errors.push(format!("{}: {e}", dest.display())),
+            }
+        }
+        if !rep.added.is_empty() {
+            self.events.emit(Event::LibraryChanged { added: rep.added.len(), updated: 0, missing: 0 });
+        }
+        rep
+    }
+
+    /// Smaže záznam; soubor se přesune do koše knihovny (_Trash), aby ho sledování znovu nepřidalo.
+    pub fn delete_track(&self, id: i64) -> Result<()> {
+        let Some(t) = self.db.get_track(id)? else { return Ok(()) };
+        let src = PathBuf::from(&t.path);
+        if src.exists() && self.folder_for(&src).is_some() {
+            let trash = self.root().join(TRASH_DIR);
+            std::fs::create_dir_all(&trash)?;
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            let dest = trash.join(format!("{stamp}_{}", t.filename));
+            if std::fs::rename(&src, &dest).is_err() {
+                std::fs::copy(&src, &dest)?;
+                std::fs::remove_file(&src)?;
+            }
+        }
+        self.db.delete_track(id)?;
+        self.events.emit(Event::LibraryChanged { added: 0, updated: 0, missing: 1 });
+        Ok(())
+    }
+
+    /// Vlastní obal skladby.
+    pub fn set_custom_cover(&self, id: i64, data: &[u8], mime: &str) -> Result<()> {
+        let dir = self.data_dir.join("Covers");
+        std::fs::create_dir_all(&dir)?;
+        let ext = if mime.contains("png") { "png" } else if mime.contains("webp") { "webp" } else { "jpg" };
+        for e in ["png", "jpg", "webp"] { let _ = std::fs::remove_file(dir.join(format!("{id}.{e}"))); }
+        let p = dir.join(format!("{id}.{ext}"));
+        std::fs::write(&p, data)?;
+        self.db.set_cover(id, Some(&path_str(&p)))?;
+        Ok(())
+    }
+
+    pub fn clear_custom_cover(&self, id: i64) -> Result<()> {
+        if let Some(t) = self.db.get_track(id)? { if let Some(p) = t.cover_path { let _ = std::fs::remove_file(p); } }
+        self.db.set_cover(id, None)
+    }
+}
+
+/// Obal: vlastní obrázek, jinak z tagu.
+pub fn cover_for(t: &Track) -> Option<(Vec<u8>, String)> {
+    if let Some(p) = &t.cover_path {
+        if let Ok(d) = std::fs::read(p) {
+            let mime = if p.ends_with(".png") { "image/png" } else if p.ends_with(".webp") { "image/webp" } else { "image/jpeg" };
+            return Some((d, mime.into()));
+        }
+    }
+    read_cover(Path::new(&t.path))
+}
+
+/// Efektivní playlister kód (ruční, jinak prefix + id).
+pub fn playlister_code(cfg: &Config, t: &Track) -> String {
+    if let Some(c) = &t.playlister_code { if !c.is_empty() { return c.clone(); } }
+    let pre = cfg.library.prefixes.get(&t.kind()).cloned().unwrap_or_else(|| t.kind().default_prefix().into());
+    format!("{pre}{:05}", t.id)
+}
+
+/// Export knihovny do textu pro playlister / traffic software.
+pub fn export_playlister(db: &Db, cfg: &Config, kind: Option<&str>, template: Option<&str>, since: Option<&str>) -> Result<String> {
+    let f = crate::db::TrackFilter { kind: kind.map(String::from), include_missing: Some(false), limit: Some(1_000_000), ..Default::default() };
+    let (tracks, _) = db.list_tracks(&f)?;
+    let tpl = template.filter(|t| !t.is_empty()).unwrap_or(&cfg.library.export_template).to_string();
+    let mut out = String::new();
+    for t in tracks {
+        if let Some(s) = since { if t.added_at.as_str() < s { continue; } }
+        let (ci, _, co) = t.effective_cues();
+        let dur_s = ((co - ci).max(0) as f64 / 1000.0).round() as i64;
+        let line = tpl
+            .replace("{CODE}", &playlister_code(cfg, &t))
+            .replace("{ARTIST}", &t.artist).replace("{TITLE}", &t.title).replace("{ALBUM}", &t.album)
+            .replace("{CATEGORY}", &t.category).replace("{CATEGORY2}", &t.category2).replace("{CATEGORY3}", &t.category3)
+            .replace("{DURATION}", &format!("{}:{:02}", dur_s / 60, dur_s % 60)).replace("{DURATION_S}", &dur_s.to_string())
+            .replace("{FILENAME}", &t.filename).replace("{PATH}", &t.path).replace("{ISRC}", &t.isrc)
+            .replace("{YEAR}", &t.year.map(|y| y.to_string()).unwrap_or_default())
+            .replace("{KIND}", t.kind().as_str());
+        out += &line;
+        out += "\r\n";
+    }
+    Ok(out)
 }
