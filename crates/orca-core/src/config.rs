@@ -482,6 +482,30 @@ pub struct LibraryConfig {
     pub export_template: String,
     /// Při přidání souboru se stejným názvem jako už v knihovně je: "rename" | "replace" | "skip"
     pub on_duplicate: String,
+    /// Data stanice (obrázky moderátorů a pořadů, obaly, obrázky ke spotům) ukládat do `<stanice>/Data`.
+    pub data_in_station: bool,
+    /// Při vytváření struktury založit podsložku pro každou kategorii.
+    pub category_folders: bool,
+    /// Automatická složka (inbox): co se do ní nakopíruje, samo se zařadí do knihovny.
+    pub inbox: InboxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxConfig {
+    pub enabled: bool,
+    /// Prázdné = `<stanice>/Import`.
+    pub dir: PathBuf,
+    /// Typ pro soubory položené přímo do kořene automatické složky.
+    pub default_kind: TrackKind,
+    /// Soubor se zpracuje, až se jeho velikost tolik sekund nemění (dokončené kopírování).
+    pub settle_s: u32,
+    /// Převzít značky (cart chunk, RadioDJ, mAirList .mmd) uložené v souboru nebo vedle něj.
+    pub read_markers: bool,
+}
+
+impl Default for InboxConfig {
+    fn default() -> Self { Self { enabled: true, dir: PathBuf::new(), default_kind: TrackKind::Song, settle_s: 5, read_markers: true } }
 }
 
 impl Default for LibraryConfig {
@@ -492,6 +516,9 @@ impl Default for LibraryConfig {
             prefixes: TrackKind::ALL.iter().map(|k| (*k, k.default_prefix().to_string())).collect(),
             export_template: "{CODE};{ARTIST};{TITLE};{DURATION};{CATEGORY};{FILENAME}".into(),
             on_duplicate: "rename".into(),
+            data_in_station: true,
+            category_folders: true,
+            inbox: InboxConfig::default(),
         }
     }
 }

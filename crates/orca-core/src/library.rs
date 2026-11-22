@@ -319,6 +319,13 @@ impl Library {
 
 
 impl Library {
+    /// Zastaví sledování složek (např. během přesunu složky stanice).
+    pub fn stop_watching(&self) { *self.watcher.lock() = None; }
+
+    pub fn folder_for_public(&self, path: &Path) -> Option<WatchFolder> { self.folder_for(path) }
+
+    pub fn notify_changed(&self, added: usize) { self.events.emit(Event::LibraryChanged { added, updated: 0, missing: 0 }); }
+
     pub fn root(&self) -> PathBuf { library_root(&self.cfg.read(), &self.data_dir) }
 
     /// Cílová složka pro nový soubor daného typu a kategorie.
@@ -415,7 +422,7 @@ impl Library {
 
     /// Vlastní obal skladby.
     pub fn set_custom_cover(&self, id: i64, data: &[u8], mime: &str) -> Result<()> {
-        let dir = self.data_dir.join("Covers");
+        let dir = crate::station::images_dir(&self.cfg.read(), &self.data_dir, "covers");
         std::fs::create_dir_all(&dir)?;
         let ext = if mime.contains("png") { "png" } else if mime.contains("webp") { "webp" } else { "jpg" };
         for e in ["png", "jpg", "webp"] { let _ = std::fs::remove_file(dir.join(format!("{id}.{e}"))); }

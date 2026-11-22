@@ -104,7 +104,7 @@ async fn delete_doc<T: sched::Doc + Send + 'static>(State(o): State<St>, Path(id
 async fn show_delete(State(o): State<St>, Path(id): Path<i64>) -> ApiResult { sched::delete_show(&o.db, id)?; o.meta.refresh(); ok() }
 
 fn media_path(o: &St, kind: &str, id: i64, ext: &str) -> std::path::PathBuf {
-    o.data_dir.join("Media").join(kind).join(format!("{id}-{}.{ext}", chrono::Utc::now().timestamp()))
+    orca_core::station::images_dir(&o.cfg.read(), &o.data_dir, kind).join(format!("{id}-{}.{ext}", chrono::Utc::now().timestamp()))
 }
 
 /// Převede nahraný obrázek (JPG, PNG, WebP, GIF, BMP, TIFF, HEIC…) na uložitelný JPEG/PNG.

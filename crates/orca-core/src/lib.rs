@@ -16,6 +16,8 @@ pub mod events;
 pub mod library;
 pub mod meta;
 pub mod general;
+pub mod import;
+pub mod station;
 pub mod gpio;
 pub mod model;
 pub mod monitor;
@@ -70,6 +72,7 @@ pub struct Orca {
     pub users: users::Users,
     pub monitor: monitor::Monitor,
     pub gpio: Arc<gpio::Gpio>,
+    pub inbox: Arc<station::Inbox>,
 }
 
 impl Orca {
@@ -101,9 +104,10 @@ impl Orca {
         let general = general::General::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf(), automation.clone());
         if cfg.read().general.keep_awake { general::keep_awake(); }
         let gpio = gpio::Gpio::start(cfg.clone(), engine.clone(), automation.clone());
+        let inbox = station::Inbox::start(cfg.clone(), library.clone(), db.clone(), data_dir.to_path_buf());
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox }))
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).
@@ -129,5 +133,29 @@ impl Orca {
         if serde_json::to_string(&old.meta)? != serde_json::to_string(&new.meta)? || serde_json::to_string(&old.relay)? != serde_json::to_string(&new.relay)? { self.meta.refresh(); }
         self.events.emit(events::Event::ConfigChanged);
         Ok(())
+    }
+
+    /// Změna složky stanice. `move_files`: přesunout soubory ze staré složky; `rewrite_db`: přepsat cesty v databázi
+    /// (vypněte jen tehdy, když už cesty odpovídají – např. po ruční kopii a přemapování).
+    pub fn relocate_station(&self, new_root: &Path, move_files: bool, rewrite_db: bool) -> Result<station::RelocateReport> {
+        let cfg = self.cfg.read().clone();
+        let old = library::library_root(&cfg, &self.data_dir);
+        if new_root.as_os_str().is_empty() { anyhow::bail!("zadejte novou složku stanice"); }
+        if new_root == old { anyhow::bail!("nová složka je stejná jako současná"); }
+        if new_root.starts_with(&old) { anyhow::bail!("nová složka nesmí být uvnitř současné složky stanice"); }
+        if old.starts_with(new_root) { anyhow::bail!("nová složka nesmí obsahovat současnou složku stanice"); }
+        std::fs::create_dir_all(new_root)?;
+        let mut rep = station::RelocateReport { from: old.display().to_string(), to: new_root.display().to_string(), ..Default::default() };
+        self.library.stop_watching();
+        if move_files && old.is_dir() { station::move_tree(&old, new_root, &mut rep); }
+        if rewrite_db { rep.rewritten = station::rewrite_all_paths(&self.db, &station::with_sep(&old), &station::with_sep(new_root))?; }
+        let mut new = cfg.clone();
+        new.library.root = new_root.to_path_buf();
+        for wf in new.watch_folders.iter_mut() { wf.path = station::remap(&wf.path, &old, new_root); }
+        if !new.library.inbox.dir.as_os_str().is_empty() { new.library.inbox.dir = station::remap(&new.library.inbox.dir, &old, new_root); }
+        self.apply_config(new)?;
+        self.library.start_watching()?;
+        log::info!("složka stanice přesunuta: {} → {} ({} souborů, {} záznamů)", rep.from, rep.to, rep.moved_files, rep.rewritten);
+        Ok(rep)
     }
 }

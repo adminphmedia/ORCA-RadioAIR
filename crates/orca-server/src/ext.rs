@@ -502,7 +502,7 @@ async fn spot_meta_put(State(o): State<St>, Path(id): Path<i64>, Json(mut m): Js
     ok()
 }
 async fn spot_image_upload(State(o): State<St>, Path(id): Path<i64>, body: Bytes) -> ApiResult {
-    let dir = o.data_dir.clone();
+    let dir = orca_core::station::images_dir(&o.cfg.read(), &o.data_dir, "spots");
     let o2 = o.clone();
     blocking(move || {
         let ff = orca_core::encoder::resolve_ffmpeg(&o2.cfg.read());

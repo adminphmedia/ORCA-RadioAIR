@@ -1,6 +1,20 @@
-# ORCA RadioAIR 0.3.0 – testovací verze
+# ORCA RadioAIR 0.4.0 – testovací verze
 
-## Novinky v 0.3.0
+## Novinky v 0.4.0
+- **Složka stanice** – jedna složka pro celé rádio: Songs, Jingles, Spots … s podsložkami podle kategorií, automatická složka Import a Data (obrázky moderátorů, pořadů, obaly, obrázky ke spotům, nahrávky). Tlačítko Vytvořit strukturu složek, přehled složek s počty skladeb.
+- **Přesun složky stanice** na jiný disk / NAS – soubory se přesunou a cesty v databázi (skladby, obrázky, plán, historie) se přepíšou; předem se zazálohuje databáze.
+- **Automatická složka (Import)** – soubor nakopírovaný do Import/Typ/Kategorie se po dokopírování sám zařadí do knihovny i se značkami; chyby do Import/_Chyby s vysvětlením; protokol v nastavení.
+- **Import z jiných programů** – předvolby Jazler SOHO (CSV), RadioDJ (SQL dump / CSV, značky cue_times), CartMaster a broadcast WAV (cart chunk), mAirList (.mmd), složka se soubory, playlist M3U/PLS a obecný CSV s vlastním přiřazením sloupců a jednotkou času. Náhled před importem, hledání souborů podle názvu, přemapování cest, protokol importu.
+- Výběr složky / souboru na disku přímo v nastavení (Procházet…).
+- Manuál: nové články Složka stanice, Automatická složka, Import z jiných programů, Převod z Jazleru a z RadioDJ; dokumentace `docs/import.md`.
+
+### Test 0.4.0
+1. Ovládací panel → Složka stanice a import → Změnit / přesunout složku stanice → vyberte např. složku na externím disku → Přesunout. Ověřte, že knihovna hraje a v přehledu jsou počty skladeb.
+2. Vytvořit strukturu složek → ve Finderu / Průzkumníku zkontrolujte Import/Songs/<kategorie> a Data/Images.
+3. Nakopírujte MP3 do Import/Songs/<kategorie> a WAV do Import/Znělky → za pár sekund je v knihovně a v protokolu automatické složky.
+4. Jazler: vyexportujte knihovnu Songs do CSV (Customize Export – všechna pole), zkopírujte hudbu staré stanice na Mac, Import z jiných programů → Jazler SOHO → nahrajte CSV, vyplňte „Kde jsou soubory staré stanice“ → Načíst náhled → zkontrolujte intro a mix → Importovat.
+
+## Dříve (0.3.0)
 - **Hudební podkres** – značky Podkres ON / OFF v playlistu i deckách, knihovna Podkresy (intro, outro, hlasitost, náběh/doznění), plynulá smyčka.
 - **Živý vstup** – playlist se zastaví, ve studiu svítí ŽIVĚ s časem; pokračuje tlačítkem Pokračovat, klávesou (F12 / ⌥Enter) nebo stažením šavle na pultu.
 - **Pult a fader start (GPI)** – MIDI (CC / nota), sériový port / USB GPIO (CTS/DSR/DCD/RI), TCP příkazy, HTTP pro Stream Deck / Companion.
@@ -16,13 +30,13 @@
 
 ## Instalace
 
-**macOS (Apple Silicon i Intel, macOS 11+)** – soubor `ORCA RadioAIR_0.3.0_universal.dmg`
+**macOS (Apple Silicon i Intel, macOS 11+)** – soubor `ORCA RadioAIR_0.4.0_universal.dmg`
 1. Otevřete DMG a přetáhněte ORCA RadioAIR do složky Aplikace.
 2. Aplikace zatím není podepsaná certifikátem Apple. Při prvním spuštění: pravým tlačítkem na aplikaci → Otevřít → Otevřít.
    Pokud macOS hlásí „je poškozená“, spusťte v Terminálu: `xattr -dr com.apple.quarantine "/Applications/ORCA RadioAIR.app"`
 3. Při prvním přehrávání / nahrávání povolte přístup k mikrofonu a zvuku, pokud se systém zeptá.
 
-**Windows 10/11 (64 bit)** – `ORCA RadioAIR_0.3.0_x64-setup.exe` (nebo `.msi`)
+**Windows 10/11 (64 bit)** – `ORCA RadioAIR_0.4.0_x64-setup.exe` (nebo `.msi`)
 1. Spusťte instalátor. SmartScreen: Další informace → Přesto spustit.
 2. Instaluje se pro všechny uživatele (vyžaduje oprávnění správce).
 

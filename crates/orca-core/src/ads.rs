@@ -143,9 +143,10 @@ pub fn save_spot_meta(db: &Db, m: &SpotMeta) -> Result<()> {
 }
 
 /// Uloží obrázek spotu do Media/spots a vrátí cestu.
-pub fn store_spot_image(data_dir: &Path, track_id: i64, bytes: &[u8], ffmpeg: &Path) -> Result<String> {
+/// `dir` = složka obrázků ke spotům (viz [`crate::station::images_dir`]).
+pub fn store_spot_image(dir: &Path, track_id: i64, bytes: &[u8], ffmpeg: &Path) -> Result<String> {
     let (data, ext) = crate::slides::normalize_upload(bytes, ffmpeg)?;
-    let dir = data_dir.join("Media").join("spots");
+    let dir = dir.to_path_buf();
     std::fs::create_dir_all(&dir)?;
     for e in std::fs::read_dir(&dir)?.flatten() {
         if e.file_name().to_string_lossy().starts_with(&format!("{track_id}-")) { let _ = std::fs::remove_file(e.path()); }
