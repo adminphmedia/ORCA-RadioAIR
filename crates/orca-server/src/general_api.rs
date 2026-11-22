@@ -239,6 +239,6 @@ async fn queue_live(State(o): State<St>, Json(r): Json<LiveReq>) -> ApiResult {
     let it = orca_core::model::QueueItem::live_break(&r.label, r.duration_s as i64 * 1000, r.auto_continue, "manual", "živý vstup – přidáno ručně");
     let id = it.id.clone();
     o.engine.queue_push(it, if r.now { Some(0) } else { r.position });
-    if r.now { o.engine.send(orca_core::engine::Cmd::Next); }
+    if r.now { o.engine.send(orca_core::engine::Cmd::PlayNow); }
     Ok(Json(json!({"ok": true, "id": id})).into_response())
 }

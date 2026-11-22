@@ -166,7 +166,7 @@ fn push_items(o: &St, items: Vec<orca_core::model::QueueItem>, position: &str) -
         "end" => for it in items { o.engine.queue_push(it, None); },
         _ => for (i, it) in items.into_iter().enumerate() { o.engine.queue_push(it, Some(i)); },
     }
-    if position == "now" { o.engine.send(orca_core::engine::Cmd::Next); }
+    if position == "now" { o.engine.send(orca_core::engine::Cmd::PlayNow); }
     n
 }
 

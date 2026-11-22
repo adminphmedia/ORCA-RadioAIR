@@ -58,6 +58,7 @@ pub fn router(orca: St) -> Router {
         .route("/queue", get(queue_get).post(queue_add).delete(queue_clear))
         .route("/queue/{id}", axum::routing::delete(queue_remove))
         .route("/queue/move", post(queue_move))
+        .route("/queue/{id}/play-now", post(queue_play_now))
         // knihovna
         .route("/tracks", get(tracks_list))
         .route("/tracks/{id}", get(track_get).patch(track_patch))
@@ -229,7 +230,13 @@ async fn track_reanalyze(State(o): State<St>, Path(id): Path<i64>, body: Option<
 async fn track_play_now(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
     let t = o.db.get_track(id)?.ok_or_else(|| not_found("skladba"))?;
     o.engine.queue_push(QueueItem::new(t, "manual", "přehráno okamžitě"), Some(0));
-    o.engine.send(Cmd::Next);
+    o.engine.send(Cmd::PlayNow);
+    ok()
+}
+/// Přehrát hned položku, která už je v deckách (přesune se na začátek – nezdvojí se).
+async fn queue_play_now(State(o): State<St>, Path(id): Path<String>) -> ApiResult {
+    if !o.engine.queue_move(&id, 0) { return Err(not_found("položka decků")); }
+    o.engine.send(Cmd::PlayNow);
     ok()
 }
 async fn instant_play(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {

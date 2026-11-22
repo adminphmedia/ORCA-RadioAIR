@@ -11,6 +11,9 @@
 - **Moderátorská časová osa** ve studiu – zvuková křivka, zóny intro / zpěv / outro, značky a velký pruh „co teď“ s odpočtem; intro další položky.
 - **Barvy kategorií** – řádky v deckách i playlistech mají podklad v barvě kategorie a ikonu v plné barvě; kategorie bez barvy dostanou automatickou.
 - **Logo stanice** vlevo v horní liště studia.
+- **Přehrát hned** už nehraje přes sebe: hrající položka se krátce stáhne (max. 0,6 s) a nová začne až po jejím doznění; u položky z decků se nezdvojí. Podkres a instanty pokračují.
+- **Podkres**: značky ON i OFF jasně žluté, položky mezi nimi se štítkem „přes podkres“; stav „doznívá“ se u podkresu už nezobrazuje trvale.
+- **Reklamy** sytě červeně s ikonou peněz v deckách i playlistech.
 - Ovládací panel: výraznější nadpisy skupin menu; nápověda každé části začíná laickým vysvětlením „Jednoduše řečeno“.
 
 ### Test 0.6.0

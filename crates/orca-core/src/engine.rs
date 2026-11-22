@@ -60,6 +60,9 @@ pub enum Cmd {
     Play,
     Stop,
     Next,
+    /// Přehrát hned: hrající položku (i se sweeperem přes ni) krátce stáhnout a novou spustit až po doznění –
+    /// nic nehraje přes sebe. Podkres a instanty pokračují.
+    PlayNow,
     Pause,
     StopAfterCurrent(bool),
     /// Opakovat právě hrající položku
@@ -270,7 +273,7 @@ impl Voice {
             length_ms: f_to_ms(self.len),
             remaining_ms: f_to_ms(self.len.saturating_sub(self.pos)),
             mix_at_ms: f_to_ms(self.mix_at),
-            fading: self.fade.is_some(),
+            fading: self.kill_after_fade || self.fade.map(|f| f.to < f.from && self.pos >= f.start).unwrap_or(false),
         }
     }
 
@@ -599,6 +602,8 @@ impl Engine {
         let mut proc_bypass = false;
         let mut xfade_pos: usize = 0;
         let mut pending_ack: Option<u64> = None;
+        // po „Přehrát hned“ se další položka spustí až po doznění předchozí
+        let mut hold_until: Option<Instant> = None;
         let mut old_buf = vec![0f32; BLOCK * 2];
         let mut out_buf: Vec<f32> = Vec::with_capacity(BLOCK * 4);
         const XFADE: usize = 2400; // 50 ms při 48 kHz
@@ -633,6 +638,18 @@ impl Engine {
                         stop_after = false;
                         pending.clear();
                         if let Some((v, x)) = self.start_next(&mut preloaded) { self.push_started(&mut voices, v, x, &mut bed); }
+                    }
+                    Cmd::PlayNow => {
+                        state = PlayState::Playing;
+                        let len_ms = manual_fade.clamp(150, 600);
+                        for v in voices.iter_mut().filter(|v| !v.overlay || (v.item.source != "instant" && v.item.source != "bed")) {
+                            v.fade = Some(Fade { from: v.fade.map(|f| f.gain_at(v.pos)).unwrap_or(1.0), to: 0.0, start: v.pos, len: len_ms * rate / 1000 });
+                            v.kill_after_fade = true;
+                            v.segued = true;
+                        }
+                        stop_after = false;
+                        pending.clear();
+                        hold_until = Some(Instant::now() + Duration::from_millis(len_ms));
                     }
                     Cmd::StopAfterCurrent(b) => stop_after = b,
                     Cmd::Loop(b) => loop_current = b,
@@ -716,7 +733,8 @@ impl Engine {
                     }
                 }
             }
-            if state == PlayState::Playing {
+            if hold_until.map(|t| Instant::now() >= t).unwrap_or(false) { hold_until = None; }
+            if state == PlayState::Playing && hold_until.is_none() {
                 let main_count = voices.iter().filter(|v| !v.overlay && !v.kill_after_fade).count();
                 let need_next = match voices.iter().rev().find(|v| !v.overlay && !v.segued) {
                     Some(cur) => cur.pos + BLOCK as u64 >= cur.mix_at && !stop_after,
