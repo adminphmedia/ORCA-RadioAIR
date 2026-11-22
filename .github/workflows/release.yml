@@ -27,14 +27,26 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
 
-      # Volitelně: UI z Lovable (repozitář s Lovable projektem nastav v proměnné LOVABLE_UI_REPO, např. "pavel/orca-ui")
+      # UI z Lovable: v repozitáři je přibalený poslední build (ui-dist/).
+      # Pro automatické stažení aktuální verze z Lovable repozitáře nastav:
+      #   Settings → Secrets and variables → Actions → Variables: LOVABLE_UI_REPO = adminphmedia/orca-radio-airwave
+      #   Settings → Secrets and variables → Actions → Secrets:   UI_REPO_TOKEN = token s právem čtení (Contents: Read) k UI repozitáři
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ vars.LOVABLE_UI_REPO != '' }}
       - name: Build UI (Lovable)
         if: ${{ vars.LOVABLE_UI_REPO != '' }}
         shell: bash
+        env:
+          UI_REPO_TOKEN: ${{ secrets.UI_REPO_TOKEN }}
         run: |
-          git clone --depth 1 https://github.com/${{ vars.LOVABLE_UI_REPO }} ui-src
-          cd ui-src && npm ci && npm run build
-          rm -rf ../ui-dist/* && cp -R dist/* ../ui-dist/
+          if [ -n "$UI_REPO_TOKEN" ]; then
+            git clone --depth 1 "https://x-access-token:${UI_REPO_TOKEN}@github.com/${{ vars.LOVABLE_UI_REPO }}.git" ui-src
+          else
+            git clone --depth 1 "https://github.com/${{ vars.LOVABLE_UI_REPO }}.git" ui-src
+          fi
+          cd ui-src && bun install --frozen-lockfile && bun run build:orca
+          find ../ui-dist -mindepth 1 ! -name README.md -delete
+          cp -R dist/client/. ../ui-dist/
 
       # Windows: přibalit ffmpeg (LGPL build). macOS používá ffmpeg z Homebrew (brew install ffmpeg).
       - name: Bundle ffmpeg (Windows)
