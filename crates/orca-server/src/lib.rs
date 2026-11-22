@@ -147,6 +147,8 @@ async fn transport(State(o): State<St>, Path(action): Path<String>) -> ApiResult
         "loop" => Cmd::Loop(true),
         "cancel-loop" => Cmd::Loop(false),
         "restart" => Cmd::Restart,
+        "talkover" => Cmd::TalkOver(true),
+        "cancel-talkover" => Cmd::TalkOver(false),
         _ => return Err(bad("neznámá akce")),
     };
     o.engine.send(cmd);

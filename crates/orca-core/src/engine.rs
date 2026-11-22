@@ -44,6 +44,8 @@ pub struct EngineStatus {
     /// Opakovat právě hrající položku (Jazler Loop)
     #[serde(default)]
     pub loop_current: bool,
+    #[serde(default)]
+    pub talkover: bool,
     pub current: Option<VoiceStatus>,
     pub voices: Vec<VoiceStatus>,
     pub output: OutputStatus,
@@ -59,6 +61,8 @@ pub enum Cmd {
     Loop(bool),
     /// Přehrát právě hrající položku znovu od začátku
     Restart,
+    /// Mikrofon: ztlumit hudbu (talk-over) o duck_db
+    TalkOver(bool),
     /// Okamžitě přehrát přes hlavní stopu (instant jingle).
     Instant(Track),
     /// Zastavit všechny instant jingly.
@@ -274,6 +278,7 @@ impl Engine {
                 state: PlayState::Stopped,
                 stop_after_current: false,
                 loop_current: false,
+                talkover: false,
                 current: None,
                 voices: vec![],
                 output: OutputStatus { device: String::new(), ok: false, sample_rate: ENGINE_RATE, underruns: 0, message: String::new() },
@@ -434,6 +439,7 @@ impl Engine {
         let mut state = if self.cfg.read().auto.start_in_auto { PlayState::Playing } else { PlayState::Stopped };
         let mut stop_after = false;
         let mut loop_current = false;
+        let mut talkover = false;
         let mut mix = vec![0f32; BLOCK * 2];
         let mut clock_start = Instant::now();
         let mut frames_rendered: u64 = 0;
@@ -475,6 +481,7 @@ impl Engine {
                     }
                     Cmd::StopAfterCurrent(b) => stop_after = b,
                     Cmd::Loop(b) => loop_current = b,
+                    Cmd::TalkOver(b) => talkover = b,
                     Cmd::Restart => {
                         if let Some(cur) = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade) {
                             let mut it = cur.item.clone();
@@ -607,7 +614,7 @@ impl Engine {
 
             // --- mix
             mix.iter_mut().for_each(|s| *s = 0.0);
-            let duck_target = if voices.iter().any(|v| v.overlay && v.item.track.kind().is_overlay_capable()) { db_to_lin(self.cfg.read().audio.duck_db) } else { 1.0 };
+            let duck_target = if talkover || voices.iter().any(|v| v.overlay && v.item.track.kind().is_overlay_capable()) { db_to_lin(self.cfg.read().audio.duck_db) } else { 1.0 };
             duck += (duck_target - duck) * 0.15;
             inst_mix.iter_mut().for_each(|s| *s = 0.0);
             for v in voices.iter_mut() {
@@ -680,6 +687,7 @@ impl Engine {
                 st.state = state;
                 st.stop_after_current = stop_after;
                 st.loop_current = loop_current;
+                st.talkover = talkover;
                 st.voices = voices.iter().map(|v| v.status(rate)).collect();
                 st.current = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade).or_else(|| voices.iter().rev().find(|v| !v.overlay)).map(|v| v.status(rate));
                 if let Some(o) = &output { st.output.underruns = o.underruns.load(Ordering::Relaxed); }
