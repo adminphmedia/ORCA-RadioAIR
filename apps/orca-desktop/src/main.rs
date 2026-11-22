@@ -28,7 +28,14 @@ fn main() {
             // přibalené zdroje: ffmpeg a UI
             if let Ok(res) = app.path().resource_dir() {
                 let ff = res.join("resources").join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
-                if ff.is_file() { std::env::set_var("ORCA_FFMPEG", &ff); }
+                if ff.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(m) = std::fs::metadata(&ff) { if m.permissions().mode() & 0o111 == 0 { let _ = std::fs::set_permissions(&ff, std::fs::Permissions::from_mode(0o755)); } }
+                    }
+                    std::env::set_var("ORCA_FFMPEG", &ff);
+                }
                 let ui = res.join("ui");
                 if ui.join("index.html").is_file() { std::env::set_var("ORCA_UI_DIR", &ui); }
             }
