@@ -11,7 +11,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,22 @@ pub struct Engine {
     /// Načte aktuální verzi skladby z DB (cue body se mohly změnit po zařazení do fronty).
     resolver: RwLock<Option<TrackResolver>>,
     stitch_resolver: RwLock<Option<StitchResolver>>,
+    /// Vysílací processing: nové řetězce pro mixer (master + větev zvukové karty)
+    proc_tx: Sender<ProcMsg>,
+    proc_rx: Mutex<Option<Receiver<ProcMsg>>>,
+    /// Generace processingu potvrzená mixerem (po dokončení prolnutí)
+    pub proc_applied: AtomicU64,
+    /// Bloky pro měření (0 = vstup processingu, 1 = výstup masteru)
+    pub meter_tx: RwLock<Option<Sender<(u8, Arc<Vec<f32>>)>>>,
+}
+
+/// Nastavení processingu pro mixer.
+pub struct ProcMsg {
+    pub master: Option<Box<crate::dsp::MasterChain>>,
+    pub output_branch: Option<Box<crate::dsp::Branch>>,
+    /// Servisní bypass celé DSP cesty (i výstupní ochrany)
+    pub bypass: bool,
+    pub generation: u64,
 }
 
 pub type TrackResolver = Arc<dyn Fn(i64) -> Option<Track> + Send + Sync>;
@@ -272,6 +288,7 @@ fn soft_clip(x: f32) -> f32 {
 impl Engine {
     pub fn start(cfg: Arc<RwLock<Config>>, events: EventBus) -> Arc<Engine> {
         let (cmd_tx, cmd_rx) = unbounded();
+        let (proc_tx, proc_rx) = unbounded();
         let engine = Arc::new(Engine {
             queue: Mutex::new(VecDeque::new()),
             status: RwLock::new(EngineStatus {
@@ -292,6 +309,7 @@ impl Engine {
             rate: AtomicU32::new(ENGINE_RATE),
             resolver: RwLock::new(None),
             stitch_resolver: RwLock::new(None),
+            proc_tx, proc_rx: Mutex::new(Some(proc_rx)), proc_applied: AtomicU64::new(0), meter_tx: RwLock::new(None),
         });
         let e = engine.clone();
         std::thread::Builder::new().name("orca-mixer".into()).spawn(move || e.mixer_loop(cmd_rx)).expect("mixer thread");
@@ -299,6 +317,9 @@ impl Engine {
     }
 
     pub fn send(&self, c: Cmd) { let _ = self.cmd_tx.send(c); }
+
+    /// Předá mixeru nový processing (převezme se v příštím bloku s plynulým prolnutím).
+    pub fn proc_apply(&self, m: ProcMsg) -> bool { self.proc_tx.send(m).is_ok() }
 
     pub fn set_resolver(&self, r: TrackResolver) { *self.resolver.write() = Some(r); }
     pub fn set_stitch_resolver(&self, r: StitchResolver) { *self.stitch_resolver.write() = Some(r); }
@@ -402,7 +423,8 @@ impl Engine {
             return (Voice::new(item, src, rate, 0.0, overlay), None);
         }
         let (normalize, target) = { let c = self.cfg.read(); (c.audio.normalize, c.audio.target_lufs) };
-        let gain_db = item.track.playback_gain_db(normalize, target);
+        let kind_trim = self.cfg.read().audio.kind_trim_db.get(&item.track.kind()).copied().unwrap_or(0.0) as f64;
+        let gain_db = item.track.playback_gain_db(normalize, target) + kind_trim.clamp(-12.0, 12.0);
         let (cue_in, _, cue_out) = item.track.effective_cues();
         let max_frames = ((cue_out - cue_in).max(0) as u64 * rate as u64) / 1000;
         let src = preloaded.unwrap_or_else(|| Prefetch::start(PathBuf::from(&item.track.path), cue_in, max_frames, rate));
@@ -449,6 +471,16 @@ impl Engine {
         let mut instants_out: Option<OutputHandle> = None;
         let mut instants_dev = String::new();
         let mut inst_mix = vec![0f32; BLOCK * 2];
+        let proc_rx = self.proc_rx.lock().take().expect("proc rx");
+        let mut master: Option<Box<crate::dsp::MasterChain>> = None;
+        let mut fade_old: Option<Box<crate::dsp::MasterChain>> = None;
+        let mut out_branch: Option<Box<crate::dsp::Branch>> = None;
+        let mut proc_bypass = false;
+        let mut xfade_pos: usize = 0;
+        let mut pending_ack: Option<u64> = None;
+        let mut old_buf = vec![0f32; BLOCK * 2];
+        let mut out_buf: Vec<f32> = Vec::with_capacity(BLOCK * 4);
+        const XFADE: usize = 2400; // 50 ms při 48 kHz
 
         loop {
             // --- příkazy
@@ -635,13 +667,64 @@ impl Engine {
                     }
                 }
             }
+            // --- vysílací processing (master) – převzetí nového nastavení s prolnutím
+            while let Ok(msg) = proc_rx.try_recv() {
+                let mut nm = msg.master;
+                if let (Some(n), Some(o)) = (nm.as_mut(), master.as_ref()) { n.warm_from(o); }
+                fade_old = if nm.is_some() || master.is_some() { master.take() } else { None };
+                xfade_pos = 0;
+                master = nm;
+                out_branch = msg.output_branch;
+                proc_bypass = msg.bypass;
+                pending_ack = Some(msg.generation);
+            }
+            let meter_tx = self.meter_tx.read().clone();
+            if let Some(tx) = &meter_tx { let _ = tx.try_send((0, Arc::new(mix.clone()))); }
+            let mut processed = false;
+            if !proc_bypass && (master.is_some() || fade_old.is_some()) {
+                let t0 = Instant::now();
+                if let Some(old) = fade_old.as_mut() { old_buf.copy_from_slice(&mix); old.process(&mut old_buf); }
+                if let Some(m) = master.as_mut() { m.process(&mut mix); }
+                if fade_old.is_some() {
+                    let frames = mix.len() / 2;
+                    for i in 0..frames {
+                        let w = ((xfade_pos + i) as f32 / XFADE as f32).min(1.0);
+                        mix[i * 2] = old_buf[i * 2] * (1.0 - w) + mix[i * 2] * w;
+                        mix[i * 2 + 1] = old_buf[i * 2 + 1] * (1.0 - w) + mix[i * 2 + 1] * w;
+                    }
+                    xfade_pos += frames;
+                    if xfade_pos >= XFADE { fade_old = None; }
+                }
+                if mix.iter().any(|x| !x.is_finite()) {
+                    // selhání DSP: zahodit řetězec, vrátit se k bezpečné cestě (soft clip), udržet časování
+                    master = None; fade_old = None;
+                    mix.iter_mut().for_each(|x| if !x.is_finite() { *x = 0.0 });
+                    crate::dsp::stats().errors.fetch_add(1, Ordering::Relaxed);
+                    self.events.alert("error", "dsp_failed", "Processing vrátil neplatná data – vysílání pokračuje bez processingu (bezpečná cesta)".to_string());
+                }
+                let us = t0.elapsed().as_micros() as u32;
+                let st = crate::dsp::stats();
+                st.cpu_us_last.store(us, Ordering::Relaxed);
+                if us > st.cpu_us_max.load(Ordering::Relaxed) { st.cpu_us_max.store(us, Ordering::Relaxed); }
+                st.blocks.fetch_add(1, Ordering::Relaxed);
+                processed = master.is_some();
+                if let Some(tx) = &meter_tx { let _ = tx.try_send((1, Arc::new(mix.clone()))); }
+            }
+            if fade_old.is_none() { if let Some(g) = pending_ack.take() { self.proc_applied.store(g, Ordering::Release); } }
+            // výstup zvukové karty: výstupní větev (trim + true-peak limiter), jinak soft clip
+            out_buf.clear();
+            match out_branch.as_mut() {
+                Some(b) if !proc_bypass => { b.process(&mix, &mut out_buf); }
+                _ => out_buf.extend(mix.iter().map(|x| soft_clip(*x))),
+            }
+            // bez processingu zůstává původní chování (soft clip i do streamů)
+            if !processed { for x in mix.iter_mut() { *x = soft_clip(*x); } }
             let (mut pk_l, mut pk_r) = (0f32, 0f32);
-            for fr in mix.chunks_exact_mut(2) {
-                fr[0] = soft_clip(fr[0]);
-                fr[1] = soft_clip(fr[1]);
+            for fr in out_buf.chunks_exact(2) {
                 pk_l = pk_l.max(fr[0].abs());
                 pk_r = pk_r.max(fr[1].abs());
             }
+            if pk_l > 1.0 || pk_r > 1.0 { crate::dsp::stats().clip_samples.fetch_add(1, Ordering::Relaxed); }
             lvl_l = pk_l.max(lvl_l * 0.93);
             lvl_r = pk_r.max(lvl_r * 0.93);
             self.meter_l.store(lvl_l.to_bits(), Ordering::Relaxed);
@@ -649,9 +732,9 @@ impl Engine {
 
             // --- výstupy
             if let Some(o) = output.as_mut() {
-                if let Ok(mut chunk) = o.producer.write_chunk_uninit(mix.len()) {
+                if let Ok(mut chunk) = o.producer.write_chunk_uninit(out_buf.len()) {
                     let (a, b) = chunk.as_mut_slices();
-                    let (sa, sb) = mix.split_at(a.len());
+                    let (sa, sb) = out_buf.split_at(a.len());
                     for (d, s) in a.iter_mut().zip(sa) { d.write(*s); }
                     for (d, s) in b.iter_mut().zip(sb) { d.write(*s); }
                     unsafe { chunk.commit_all(); }

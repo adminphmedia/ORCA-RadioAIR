@@ -27,6 +27,7 @@ pub(crate) type ApiResult = Result<Response, ApiError>;
 
 mod ext;
 mod plan;
+mod proc_api;
 
 pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 impl IntoResponse for ApiError {
@@ -76,6 +77,7 @@ pub fn router(orca: St) -> Router {
         .route("/encoders/{id}/{action}", post(encoder_action))
         .merge(ext::routes())
         .merge(plan::routes())
+        .merge(proc_api::routes())
         .layer(middleware::from_fn_with_state(orca.clone(), auth));
 
     let ui_dir = {

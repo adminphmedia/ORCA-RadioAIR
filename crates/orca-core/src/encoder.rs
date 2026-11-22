@@ -138,7 +138,17 @@ impl EncoderManager {
         let ffmpeg = resolve_ffmpeg(&self.cfg.read());
         while !stop.load(Ordering::Relaxed) {
             self.set_state(&status, "connecting", "");
-            let rate = self.engine.sample_rate();
+            let engine_rate = self.engine.sample_rate();
+            // výstupní větev processingu (převzorkování → trim → true-peak limiter) přímo před enkodérem
+            let out_rate = if ec.format == StreamFormat::Opus { 48000 } else { ec.sample_rate };
+            let mut branch = crate::dsp::branch_for(&ec.id, engine_rate, out_rate);
+            let rate = branch.as_ref().map(|b| b.fs_out).unwrap_or(engine_rate);
+            let mut seen_gen = crate::dsp::runtime_gen().load(Ordering::Relaxed);
+            let mut meter = branch.as_ref().map(|b| crate::dsp::Meter::new(&b.key, b.fs_out));
+            let mut meter_reset = crate::dsp::meter_reset_gen().load(Ordering::Relaxed);
+            let mut pending: Option<String> = None;
+            let mut processed_buf: Vec<f32> = Vec::with_capacity(4096);
+            let mut since_pub = Instant::now();
             let mut cmd = Command::new(&ffmpeg);
             cmd.args(ffmpeg_args(&ec, rate)).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
             #[cfg(windows)]
@@ -171,8 +181,44 @@ impl EncoderManager {
                 if stop.load(Ordering::Relaxed) { break String::new(); }
                 match rx.recv_timeout(Duration::from_secs(2)) {
                     Ok(block) => {
+                        // změny processingu zaživa (trim, strop); změna topologie čeká na restart streamu
+                        let g = crate::dsp::runtime_gen().load(Ordering::Relaxed);
+                        if g != seen_gen {
+                            seen_gen = g;
+                            let rt = crate::dsp::runtime().read().clone();
+                            let want = rt.branches.iter().find(|b| b.target == ec.id && b.enabled && !rt.bypass).cloned();
+                            pending = match (branch.as_mut(), want) {
+                                (Some(b), Some(c)) => if b.set_conf(c) { None } else { Some("změna vzorkovací frekvence se projeví po restartu streamu".into()) },
+                                (None, None) => None,
+                                (Some(_), None) => Some("vypnutí výstupní ochrany se projeví po restartu streamu".into()),
+                                (None, Some(_)) => Some("zapnutí výstupní ochrany se projeví po restartu streamu".into()),
+                            };
+                        }
+                        processed_buf.clear();
+                        match branch.as_mut() {
+                            Some(b) => b.process(&block, &mut processed_buf),
+                            None => {
+                                // master processing bez výstupní větve: bezpečnostní soft clip
+                                let rt_on = crate::dsp::runtime().read().enabled;
+                                if rt_on { processed_buf.extend(block.iter().map(|x| { let a = x.abs(); if a <= 0.9 { *x } else { x.signum() * (0.9 + 0.1 * ((a - 0.9) / 0.1).tanh()) } })); }
+                                else { processed_buf.extend_from_slice(&block); }
+                            }
+                        }
+                        if let (Some(m), Some(b)) = (meter.as_mut(), branch.as_ref()) {
+                            let rg = crate::dsp::meter_reset_gen().load(Ordering::Relaxed);
+                            if rg != meter_reset { meter_reset = rg; m.reset(); }
+                            m.feed(&processed_buf);
+                            if since_pub.elapsed() > Duration::from_millis(300) {
+                                since_pub = Instant::now();
+                                let mut s = m.snap.clone();
+                                s.limiter_gr_db = Some(b.limiter_gr_db());
+                                s.latency_ms = Some(b.latency_ms());
+                                s.pending = pending.clone();
+                                crate::dsp::publish(&s);
+                            }
+                        }
                         bytebuf.clear();
-                        for s in block.iter() { bytebuf.extend_from_slice(&s.to_le_bytes()); }
+                        for s in processed_buf.iter() { bytebuf.extend_from_slice(&s.to_le_bytes()); }
                         if let Err(e) = stdin.write_all(&bytebuf) { break format!("spojení přerušeno: {e}"); }
                         bytes.fetch_add(bytebuf.len() as u64, Ordering::Relaxed);
                     }

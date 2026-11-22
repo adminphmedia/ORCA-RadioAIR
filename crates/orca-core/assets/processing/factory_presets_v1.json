@@ -1,0 +1,1406 @@
+[
+ {
+  "id": "energic-chr",
+  "name": "ENERGIC CHR",
+  "description": "Pevný moderní zvuk s čitelnou řečí, středy cca 2,3:1, typicky 2–4 dB redukce.",
+  "intensity_label": "silná",
+  "usage": "Top 40 / CHR, mladé hitové rádio",
+  "reference": "Z100 New York (formát Top 40)",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -17,
+    "max_boost_db": 8,
+    "max_cut_db": 10,
+    "attack_db_s": 4,
+    "release_db_s": 1.5,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 1.0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0.5,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -30,
+      "ratio": 2.0,
+      "attack_ms": 30,
+      "release_ms": 300,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -31,
+      "ratio": 2.3,
+      "attack_ms": 15,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 8,
+      "makeup_db": 2
+     },
+     {
+      "threshold_dbfs": -33,
+      "ratio": 2.3,
+      "attack_ms": 8,
+      "release_ms": 150,
+      "knee_db": 6,
+      "max_gr_db": 8,
+      "makeup_db": 2
+     },
+     {
+      "threshold_dbfs": -37,
+      "ratio": 2.0,
+      "attack_ms": 3,
+      "release_ms": 100,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 1.5
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6500,
+    "threshold_dbfs": -30,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "energic-dance",
+  "name": "ENERGIC Dance",
+  "description": "Výraznější spodek, pomalejší attack basů – kopák si drží náběh. Středy cca 2:1.",
+  "intensity_label": "silná",
+  "usage": "Taneční rádio, klubové bloky",
+  "reference": "Taneční a klubové stanice",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -17,
+    "max_boost_db": 8,
+    "max_cut_db": 10,
+    "attack_db_s": 4,
+    "release_db_s": 1.5,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 75,
+     "gain_db": 1.5,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0.5,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -29,
+      "ratio": 1.8,
+      "attack_ms": 60,
+      "release_ms": 450,
+      "knee_db": 6,
+      "max_gr_db": 5,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -31,
+      "ratio": 2.0,
+      "attack_ms": 15,
+      "release_ms": 220,
+      "knee_db": 6,
+      "max_gr_db": 8,
+      "makeup_db": 1.5
+     },
+     {
+      "threshold_dbfs": -33,
+      "ratio": 2.0,
+      "attack_ms": 8,
+      "release_ms": 150,
+      "knee_db": 6,
+      "max_gr_db": 8,
+      "makeup_db": 1.5
+     },
+     {
+      "threshold_dbfs": -37,
+      "ratio": 2.0,
+      "attack_ms": 3,
+      "release_ms": 100,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 1.5
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6500,
+    "threshold_dbfs": -30,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "hot-ac",
+  "name": "Hot AC",
+  "description": "Čitelnost jako CHR s volnější dynamikou, středy cca 1,8:1, 1–3 dB redukce.",
+  "intensity_label": "střední",
+  "usage": "Pop a mainstreamové regionální rádio",
+  "reference": "Hot AC formát",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -18,
+    "max_boost_db": 6,
+    "max_cut_db": 8,
+    "attack_db_s": 3,
+    "release_db_s": 1,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0.5,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -29,
+      "ratio": 1.7,
+      "attack_ms": 30,
+      "release_ms": 300,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -30,
+      "ratio": 1.8,
+      "attack_ms": 20,
+      "release_ms": 250,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -32,
+      "ratio": 1.8,
+      "attack_ms": 10,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -36,
+      "ratio": 1.7,
+      "attack_ms": 4,
+      "release_ms": 120,
+      "knee_db": 6,
+      "max_gr_db": 5,
+      "makeup_db": 1
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6500,
+    "threshold_dbfs": -30,
+    "max_gr_db": 2
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "soft-ac",
+  "name": "Soft AC",
+  "description": "Měkčí výšky a delší návrat komprese, cca 1,5:1 a 1–2 dB redukce. Příjemné pro dlouhý poslech.",
+  "intensity_label": "mírná",
+  "usage": "Soft AC, lehká hudba do kanceláří",
+  "reference": "106.7 Lite FM (Soft AC)",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -19,
+    "max_boost_db": 5,
+    "max_cut_db": 8,
+    "attack_db_s": 2,
+    "release_db_s": 0.8,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": -0.5,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -28,
+      "ratio": 1.5,
+      "attack_ms": 40,
+      "release_ms": 500,
+      "knee_db": 8,
+      "max_gr_db": 4,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -29,
+      "ratio": 1.5,
+      "attack_ms": 25,
+      "release_ms": 450,
+      "knee_db": 8,
+      "max_gr_db": 4,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -31,
+      "ratio": 1.5,
+      "attack_ms": 15,
+      "release_ms": 400,
+      "knee_db": 8,
+      "max_gr_db": 4,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -35,
+      "ratio": 1.5,
+      "attack_ms": 5,
+      "release_ms": 250,
+      "knee_db": 8,
+      "max_gr_db": 4,
+      "makeup_db": 0
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6000,
+    "threshold_dbfs": -32,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "classic-rock",
+  "name": "Classic Rock",
+  "description": "Zachovává náběh bicích a čitelné kytary, cca 1,8–2,2:1 s pomalejším attackem.",
+  "intensity_label": "střední",
+  "usage": "Rock, classic rock",
+  "reference": "Q104.3 (Classic Rock)",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -18,
+    "max_boost_db": 6,
+    "max_cut_db": 8,
+    "attack_db_s": 3,
+    "release_db_s": 1,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0.5,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0.3,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -29,
+      "ratio": 1.8,
+      "attack_ms": 45,
+      "release_ms": 350,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -30,
+      "ratio": 2.0,
+      "attack_ms": 30,
+      "release_ms": 250,
+      "knee_db": 6,
+      "max_gr_db": 7,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -32,
+      "ratio": 2.1,
+      "attack_ms": 25,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 7,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -36,
+      "ratio": 1.8,
+      "attack_ms": 8,
+      "release_ms": 150,
+      "knee_db": 6,
+      "max_gr_db": 5,
+      "makeup_db": 1
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": false,
+    "freq_hz": 6000,
+    "threshold_dbfs": -28,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "hiphop-rnb",
+  "name": "Hip Hop & R&B",
+  "description": "Pevný spodek se samostatně omezenou redukcí basů a srozumitelný vokál, středy cca 2:1.",
+  "intensity_label": "střední",
+  "usage": "Hip hop, R&B, urban",
+  "reference": "Power 105.1 (Hip Hop & R&B)",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -17,
+    "max_boost_db": 7,
+    "max_cut_db": 9,
+    "attack_db_s": 3,
+    "release_db_s": 1,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 80,
+     "gain_db": 1.0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -28,
+      "ratio": 1.6,
+      "attack_ms": 45,
+      "release_ms": 400,
+      "knee_db": 6,
+      "max_gr_db": 3,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -30,
+      "ratio": 2.0,
+      "attack_ms": 20,
+      "release_ms": 220,
+      "knee_db": 6,
+      "max_gr_db": 7,
+      "makeup_db": 1.5
+     },
+     {
+      "threshold_dbfs": -32,
+      "ratio": 2.0,
+      "attack_ms": 10,
+      "release_ms": 180,
+      "knee_db": 6,
+      "max_gr_db": 7,
+      "makeup_db": 1.5
+     },
+     {
+      "threshold_dbfs": -36,
+      "ratio": 1.8,
+      "attack_ms": 4,
+      "release_ms": 120,
+      "knee_db": 6,
+      "max_gr_db": 5,
+      "makeup_db": 1
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6500,
+    "threshold_dbfs": -30,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "gold-oldies",
+  "name": "Gold & Oldies",
+  "description": "Pomalé AGC s omezenou rezervou pro tiché starší nahrávky, lehká komprese cca 1,6:1, bez vytahování šumu.",
+  "intensity_label": "mírná",
+  "usage": "Hity různých dekád, oldies",
+  "reference": "Stanice s hudbou z různých dekád",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 40
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -19,
+    "max_boost_db": 4,
+    "max_cut_db": 8,
+    "attack_db_s": 2,
+    "release_db_s": 0.6,
+    "gate_dbfs": -40,
+    "hold_ms": 2500,
+    "window_ms": 2500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -28,
+      "ratio": 1.6,
+      "attack_ms": 40,
+      "release_ms": 400,
+      "knee_db": 8,
+      "max_gr_db": 5,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -29,
+      "ratio": 1.6,
+      "attack_ms": 25,
+      "release_ms": 350,
+      "knee_db": 8,
+      "max_gr_db": 5,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -31,
+      "ratio": 1.6,
+      "attack_ms": 15,
+      "release_ms": 300,
+      "knee_db": 8,
+      "max_gr_db": 5,
+      "makeup_db": 0.5
+     },
+     {
+      "threshold_dbfs": -35,
+      "ratio": 1.5,
+      "attack_ms": 6,
+      "release_ms": 200,
+      "knee_db": 8,
+      "max_gr_db": 4,
+      "makeup_db": 0
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": false,
+    "freq_hz": 6000,
+    "threshold_dbfs": -28,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "news-talk",
+  "name": "News & Talk",
+  "description": "Čitelná řeč při střídání mluvčích a reportáží, cca 2,5:1, typicky 3–5 dB na hlasitější řeči, HPF 70 Hz.",
+  "intensity_label": "silná",
+  "usage": "Zpravodajství, publicistika, mluvené slovo",
+  "reference": "710 WOR, BBC Radio 4",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 70
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -17,
+    "max_boost_db": 8,
+    "max_cut_db": 10,
+    "attack_db_s": 6,
+    "release_db_s": 2,
+    "gate_dbfs": -40,
+    "hold_ms": 800,
+    "window_ms": 800
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": true,
+      "freq_hz": 3000,
+      "gain_db": 1.0,
+      "q": 1.0
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -30,
+      "ratio": 2.0,
+      "attack_ms": 20,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -32,
+      "ratio": 2.5,
+      "attack_ms": 8,
+      "release_ms": 150,
+      "knee_db": 6,
+      "max_gr_db": 8,
+      "makeup_db": 2
+     },
+     {
+      "threshold_dbfs": -34,
+      "ratio": 2.5,
+      "attack_ms": 5,
+      "release_ms": 120,
+      "knee_db": 6,
+      "max_gr_db": 8,
+      "makeup_db": 2
+     },
+     {
+      "threshold_dbfs": -38,
+      "ratio": 2.0,
+      "attack_ms": 2,
+      "release_ms": 100,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 1
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6000,
+    "threshold_dbfs": -30,
+    "max_gr_db": 4
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "live-sport",
+  "name": "Live Sport",
+  "description": "Stabilní komentář se zachovanou atmosférou, cca 2:1, pomalejší návrat a omezený AGC boost.",
+  "intensity_label": "střední",
+  "usage": "Sportovní přenosy",
+  "reference": "Sportovní přenosy",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 50
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -18,
+    "max_boost_db": 4,
+    "max_cut_db": 10,
+    "attack_db_s": 4,
+    "release_db_s": 0.5,
+    "gate_dbfs": -38,
+    "hold_ms": 3000,
+    "window_ms": 2000
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -29,
+      "ratio": 1.8,
+      "attack_ms": 30,
+      "release_ms": 600,
+      "knee_db": 6,
+      "max_gr_db": 6,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -31,
+      "ratio": 2.0,
+      "attack_ms": 15,
+      "release_ms": 600,
+      "knee_db": 6,
+      "max_gr_db": 7,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -33,
+      "ratio": 2.0,
+      "attack_ms": 10,
+      "release_ms": 500,
+      "knee_db": 6,
+      "max_gr_db": 7,
+      "makeup_db": 1
+     },
+     {
+      "threshold_dbfs": -37,
+      "ratio": 1.8,
+      "attack_ms": 4,
+      "release_ms": 400,
+      "knee_db": 6,
+      "max_gr_db": 5,
+      "makeup_db": 0.5
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": true,
+    "freq_hz": 6000,
+    "threshold_dbfs": -30,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "jazz-acoustic",
+  "name": "Jazz & Acoustic",
+  "description": "Jemné vyrovnání cca 1,3–1,5:1, obvykle do 2 dB redukce, neutrální EQ a zachovaný náběh nástrojů.",
+  "intensity_label": "mírná",
+  "usage": "Jazz, akustická a world music",
+  "reference": "Jazzové a akustické stanice",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 30
+   },
+   "agc": {
+    "enabled": true,
+    "target_dbfs": -19,
+    "max_boost_db": 4,
+    "max_cut_db": 6,
+    "attack_db_s": 1.5,
+    "release_db_s": 0.5,
+    "gate_dbfs": -45,
+    "hold_ms": 2500,
+    "window_ms": 3000
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -27,
+      "ratio": 1.4,
+      "attack_ms": 50,
+      "release_ms": 600,
+      "knee_db": 8,
+      "max_gr_db": 3,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -28,
+      "ratio": 1.4,
+      "attack_ms": 40,
+      "release_ms": 500,
+      "knee_db": 8,
+      "max_gr_db": 3,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -30,
+      "ratio": 1.4,
+      "attack_ms": 30,
+      "release_ms": 450,
+      "knee_db": 8,
+      "max_gr_db": 3,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -34,
+      "ratio": 1.3,
+      "attack_ms": 10,
+      "release_ms": 300,
+      "knee_db": 8,
+      "max_gr_db": 2,
+      "makeup_db": 0
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": false,
+    "freq_hz": 6000,
+    "threshold_dbfs": -28,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "classical",
+  "name": "Classical & Culture",
+  "description": "Otevřená dynamika: AGC vypnuté, vícepásmová komprese velmi jemná (do 1,25:1), limiter chrání špičky.",
+  "intensity_label": "mírná",
+  "usage": "Vážná hudba, kultura",
+  "reference": "BBC Radio 3 (klasický program)",
+  "transparent": false,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 20
+   },
+   "agc": {
+    "enabled": false,
+    "target_dbfs": -20,
+    "max_boost_db": 6,
+    "max_cut_db": 8,
+    "attack_db_s": 3,
+    "release_db_s": 1,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": true,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -22,
+      "ratio": 1.2,
+      "attack_ms": 80,
+      "release_ms": 1200,
+      "knee_db": 10,
+      "max_gr_db": 2,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -22,
+      "ratio": 1.25,
+      "attack_ms": 60,
+      "release_ms": 1000,
+      "knee_db": 10,
+      "max_gr_db": 2,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -24,
+      "ratio": 1.25,
+      "attack_ms": 50,
+      "release_ms": 900,
+      "knee_db": 10,
+      "max_gr_db": 2,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -28,
+      "ratio": 1.2,
+      "attack_ms": 20,
+      "release_ms": 700,
+      "knee_db": 10,
+      "max_gr_db": 2,
+      "makeup_db": 0
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": false,
+    "freq_hz": 6000,
+    "threshold_dbfs": -28,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ },
+ {
+  "id": "transparent",
+  "name": "Transparent",
+  "description": "Neutrální EQ, vypnuté AGC i dynamika. Aktivní zůstává jen ochrana výstupních větví (true-peak limiter).",
+  "intensity_label": "ochrana",
+  "usage": "Čistá distribuce, externí procesor na trase",
+  "reference": "Čistá distribuce",
+  "transparent": true,
+  "params": {
+   "schema": 1,
+   "input_gain_db": 0,
+   "hpf": {
+    "enabled": true,
+    "freq_hz": 15
+   },
+   "agc": {
+    "enabled": false,
+    "target_dbfs": -20,
+    "max_boost_db": 6,
+    "max_cut_db": 8,
+    "attack_db_s": 3,
+    "release_db_s": 1,
+    "gate_dbfs": -45,
+    "hold_ms": 1500,
+    "window_ms": 1500
+   },
+   "eq": {
+    "low_shelf": {
+     "enabled": true,
+     "freq_hz": 100,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "high_shelf": {
+     "enabled": true,
+     "freq_hz": 8000,
+     "gain_db": 0,
+     "q": 0.707
+    },
+    "bands": [
+     {
+      "enabled": false,
+      "freq_hz": 250,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 2500,
+      "gain_db": 0,
+      "q": 1
+     },
+     {
+      "enabled": false,
+      "freq_hz": 6000,
+      "gain_db": 0,
+      "q": 1
+     }
+    ]
+   },
+   "mb": {
+    "enabled": false,
+    "xover_hz": [
+     120,
+     1000,
+     5000
+    ],
+    "bands": [
+     {
+      "threshold_dbfs": -10,
+      "ratio": 1.0,
+      "attack_ms": 10,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 0,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -10,
+      "ratio": 1.0,
+      "attack_ms": 10,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 0,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -10,
+      "ratio": 1.0,
+      "attack_ms": 10,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 0,
+      "makeup_db": 0
+     },
+     {
+      "threshold_dbfs": -10,
+      "ratio": 1.0,
+      "attack_ms": 10,
+      "release_ms": 200,
+      "knee_db": 6,
+      "max_gr_db": 0,
+      "makeup_db": 0
+     }
+    ]
+   },
+   "deesser": {
+    "enabled": false,
+    "freq_hz": 6000,
+    "threshold_dbfs": -28,
+    "max_gr_db": 3
+   },
+   "stereo": {
+    "width_pct": 100
+   }
+  }
+ }
+]

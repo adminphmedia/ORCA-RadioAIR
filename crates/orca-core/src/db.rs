@@ -207,6 +207,19 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX ix_plan ON plan_items(date, hour, pos);
     CREATE TABLE sched_fired(key TEXT PRIMARY KEY, fired_at TEXT NOT NULL);
     "#,
+    // v4 – vysílací processing: presety, revize, auditní log
+    r#"
+    CREATE TABLE proc_presets(id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE proc_revisions(
+        id INTEGER PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        author TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        data TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'archived'
+    );
+    CREATE TABLE audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL, user TEXT NOT NULL DEFAULT '', action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
+    "#,
 ];
 
 pub struct Db {

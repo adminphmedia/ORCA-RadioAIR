@@ -116,6 +116,8 @@ pub struct AudioConfig {
     pub target_lufs: f64,
     /// Ztlumení hudby pod voice trackem / sweeperem (dB).
     pub duck_db: f32,
+    /// Zisk zdrojů podle typu (trim před mixem, dB) – skladby, reklamy, jingly…
+    pub kind_trim_db: BTreeMap<TrackKind, f32>,
 }
 
 impl Default for AudioConfig {
@@ -130,6 +132,7 @@ impl Default for AudioConfig {
             normalize: true,
             target_lufs: -16.0,
             duck_db: -8.0,
+            kind_trim_db: BTreeMap::new(),
         }
     }
 }

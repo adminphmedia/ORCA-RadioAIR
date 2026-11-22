@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod config;
 pub mod db;
 pub mod decode;
+pub mod dsp;
 pub mod encoder;
 pub mod engine;
 pub mod epg;
@@ -15,6 +16,7 @@ pub mod library;
 pub mod meta;
 pub mod model;
 pub mod nowplaying;
+pub mod processing;
 pub mod rds;
 pub mod recorder;
 pub mod relay;
@@ -57,6 +59,7 @@ pub struct Orca {
     pub automation: Arc<automation::Automation>,
     pub recorder: Arc<recorder::Recorder>,
     pub meta: Arc<meta::MetaHub>,
+    pub processing: Arc<processing::Processing>,
     pub window_hook: RwLock<Option<WindowHook>>,
 }
 
@@ -82,11 +85,12 @@ impl Orca {
         if let Err(e) = catalog::ensure_default_palette(&db) { log::warn!("palety: {e}"); }
         let encoders = encoder::EncoderManager::new(engine.clone(), cfg.clone(), events.clone());
         let automation = automation::Automation::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), events.clone(), data_dir.to_path_buf());
+        let processing = processing::Processing::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf());
         let meta = meta::MetaHub::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), data_dir.to_path_buf());
         if let Err(e) = library.start_watching() { events.alert("error", "watch_failed", e.to_string()); }
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, window_hook: RwLock::new(None) }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None) }))
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).

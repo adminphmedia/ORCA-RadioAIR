@@ -192,12 +192,14 @@ pub struct GridEntry {
     pub presenter_ids: Vec<i64>,
     /// Popis tohoto vysílání v EPG (prázdné = popis pořadu)
     pub description: String,
+    /// Zvukový preset processingu pro tento blok (prázdné = hlavní nastavení)
+    pub proc_preset: Option<String>,
 }
 
 impl Default for GridEntry {
     fn default() -> Self {
         Self { id: None, show_id: None, days: [true, true, true, true, true, false, false], start: "06:00".into(), end: "09:00".into(), valid_from: None, valid_to: None,
-            content: "music".into(), playlist_id: None, relay_id: None, episode_mode: "next".into(), nth: 1, start_immediately: false, presenter_ids: vec![], description: String::new() }
+            content: "music".into(), playlist_id: None, relay_id: None, episode_mode: "next".into(), nth: 1, start_immediately: false, presenter_ids: vec![], description: String::new(), proc_preset: None }
     }
 }
 
