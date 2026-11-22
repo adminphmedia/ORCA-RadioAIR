@@ -14,7 +14,7 @@
 - **Přehrát hned** už nehraje přes sebe: hrající položka se krátce stáhne (max. 0,6 s) a nová začne až po jejím doznění; u položky z decků se nezdvojí. Podkres a instanty pokračují.
 - **Podkres**: značky ON i OFF jasně žluté, položky mezi nimi se štítkem „přes podkres“; stav „doznívá“ se u podkresu už nezobrazuje trvale.
 - **Reklamy** sytě červeně s ikonou peněz v deckách i playlistech.
-- Ovládací panel: výraznější nadpisy skupin menu; nápověda každé části začíná laickým vysvětlením „Jednoduše řečeno“.
+- Ovládací panel: výraznější a sbalitelné skupiny menu; nápověda každé části začíná laickým vysvětlením „Jednoduše řečeno“.
 
 ### Test 0.6.0
 1. Atributy skladeb → Analyzovat BPM a energii → po dokončení zkontrolujte sloupce Energie a BPM.
