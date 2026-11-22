@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="cs" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ORCA RadioAIR</title>
+<style>
+:root{--bg:#0b0f14;--panel:#121821;--line:#1f2a37;--text:#e6edf3;--muted:#8b98a5;--accent:#22d3ee;--onair:#ef4444;--ok:#22c55e;--warn:#f59e0b}
+[data-theme=light]{--bg:#f4f6f8;--panel:#fff;--line:#dde3ea;--text:#0f172a;--muted:#64748b;--accent:#0891b2}
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header b{letter-spacing:.08em}.sp{flex:1}button,select,input{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+button{cursor:pointer}button.primary{background:var(--accent);color:#001;border:0;font-weight:600}button.danger{background:var(--onair);color:#fff;border:0}
+main{display:grid;grid-template-columns:minmax(320px,1fr) 1.3fr;gap:12px;padding:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:0 0 8px}
+.now .t{font-size:22px;font-weight:700}.now .a{color:var(--muted)}.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:10px 0}.bar i{display:block;height:100%;background:var(--accent)}
+.big{font:700 28px ui-monospace,Menlo,monospace}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.meter{height:10px;background:var(--line);border-radius:3px;overflow:hidden;width:180px}.meter i{display:block;height:100%;background:linear-gradient(90deg,var(--ok) 70%,var(--warn) 88%,var(--onair))}
+table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
+th{color:var(--muted);font-weight:500;font-size:12px}tr:hover td{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.pill{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line)}.live{background:var(--onair);color:#fff;border:0}.ok{color:var(--ok)}.err{color:var(--onair)}
+#alerts div{font-size:12px;color:var(--warn);margin:2px 0}
+</style>
+</head>
+<body>
+<header>
+  <b>ORCA RadioAIR</b><span class="pill" id="mode">–</span><span class="pill" id="state">–</span>
+  <span class="sp"></span><span class="big" id="clock">--:--:--</span><span class="sp"></span>
+  <button id="lang">EN</button><button id="theme">☀︎</button>
+</header>
+<main>
+  <section class="card now">
+    <h2 data-i="onair">Ve vysílání</h2>
+    <div class="t" id="title">—</div><div class="a" id="artist"></div>
+    <div class="bar"><i id="prog" style="width:0"></i></div>
+    <div class="row"><span class="big" id="remain">0:00</span><span class="sp"></span>
+      <div><div class="meter"><i id="ml"></i></div><div class="meter" style="margin-top:3px"><i id="mr"></i></div></div></div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" onclick="act('play')" data-i="play">Play</button>
+      <button onclick="act('next')" data-i="next">Další</button>
+      <button onclick="act('pause')" data-i="pause">Pauza</button>
+      <button onclick="act('stop-after-current')" data-i="stopafter">Stop po skladbě</button>
+      <button class="danger" onclick="act('stop')" data-i="stop">Stop</button>
+      <button onclick="setMode()" data-i="togglemode">Auto/Manual</button>
+    </div>
+    <h2 style="margin-top:16px" data-i="queue">Další ve vysílání</h2>
+    <table><thead><tr><th data-i="eta">Čas</th><th data-i="item">Položka</th><th data-i="len">Délka</th><th></th></tr></thead><tbody id="queue"></tbody></table>
+    <h2 style="margin-top:16px" data-i="streams">Streamy</h2><div id="enc"></div>
+    <div id="alerts"></div>
+  </section>
+  <section class="card">
+    <h2 data-i="library">Knihovna</h2>
+    <div class="row"><input id="q" style="flex:1" placeholder="Hledat…"><select id="kind"></select><span id="total" class="pill"></span></div>
+    <table style="margin-top:8px"><thead><tr><th data-i="artist">Interpret</th><th data-i="title_">Název</th><th data-i="cat">Kategorie</th><th data-i="len">Délka</th><th></th></tr></thead><tbody id="lib"></tbody></table>
+  </section>
+</main>
+<script>
+const T={cs:{onair:"Ve vysílání",play:"Play",next:"Další",pause:"Pauza",stopafter:"Stop po skladbě",stop:"Stop",togglemode:"Auto/Manual",queue:"Další ve vysílání",eta:"Čas",item:"Položka",len:"Délka",streams:"Streamy",library:"Knihovna",artist:"Interpret",title_:"Název",cat:"Kategorie",all:"Vše",add:"Přidat",playing:"hraje",stopped:"zastaveno",paused:"pauza",auto:"AUTO",manual:"MANUÁL",song:"Skladby",jingle:"Jingly",spot:"Reklamy",sweeper:"Sweepery",voicetrack:"Voice tracky",asset:"Assets",search:"Hledat…"},
+en:{onair:"On air",play:"Play",next:"Next",pause:"Pause",stopafter:"Stop after current",stop:"Stop",togglemode:"Auto/Manual",queue:"Up next",eta:"Time",item:"Item",len:"Length",streams:"Streams",library:"Library",artist:"Artist",title_:"Title",cat:"Category",all:"All",add:"Add",playing:"playing",stopped:"stopped",paused:"paused",auto:"AUTO",manual:"MANUAL",song:"Songs",jingle:"Jingles",spot:"Spots",sweeper:"Sweepers",voicetrack:"Voice tracks",asset:"Assets",search:"Search…"}};
+let lang=localStorage.lang||"cs",theme=localStorage.theme||"dark",mode="auto";
+const $=s=>document.querySelector(s),fmt=ms=>{ms=Math.max(0,ms|0);const s=Math.round(ms/1000);return Math.floor(s/60)+":"+String(s%60).padStart(2,"0")};
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function applyI18n(){document.documentElement.lang=lang;document.querySelectorAll("[data-i]").forEach(e=>e.textContent=T[lang][e.dataset.i]);$("#lang").textContent=lang=="cs"?"EN":"CZ";$("#q").placeholder=T[lang].search;
+ $("#kind").innerHTML=`<option value="">${T[lang].all}</option>`+["song","jingle","spot","sweeper","voicetrack","asset"].map(k=>`<option value="${k}">${T[lang][k]}</option>`).join("");}
+function applyTheme(){document.documentElement.dataset.theme=theme;$("#theme").textContent=theme=="dark"?"☀︎":"☾";}
+$("#lang").onclick=()=>{lang=lang=="cs"?"en":"cs";localStorage.lang=lang;applyI18n();loadLib();fetch("/api/settings/ui",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({language:lang})})};
+$("#theme").onclick=()=>{theme=theme=="dark"?"light":"dark";localStorage.theme=theme;applyTheme();fetch("/api/settings/ui",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({theme})})};
+const api=(p,o)=>fetch("/api"+p,o).then(r=>r.json());
+const act=a=>api("/transport/"+a,{method:"POST"});
+const setMode=()=>api("/mode",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:mode=="auto"?"manual":"auto"})});
+const addQ=id=>api("/queue",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({track_id:id})}).then(loadQueue);
+const delQ=id=>api("/queue/"+id,{method:"DELETE"}).then(loadQueue);
+function loadQueue(){api("/queue").then(q=>{$("#queue").innerHTML=q.map(i=>`<tr><td>${i.eta?new Date(i.eta).toLocaleTimeString(lang):""}</td><td>${esc(i.track.artist)} – ${esc(i.track.title)}</td><td>${fmt(i.track.cue_out_ms-i.track.cue_in_ms)}</td><td><button onclick="delQ('${i.id}')">✕</button></td></tr>`).join("")})}
+let lt;function loadLib(){clearTimeout(lt);lt=setTimeout(()=>{const p=new URLSearchParams({q:$("#q").value,kind:$("#kind").value,limit:200,include_missing:false});
+ api("/tracks?"+p).then(r=>{$("#total").textContent=r.total;$("#lib").innerHTML=r.items.map(t=>`<tr><td>${esc(t.artist)}</td><td>${esc(t.title)}</td><td>${esc(t.category)}</td><td>${fmt(t.duration_ms)}</td><td><button onclick="addQ(${t.id})">+</button></td></tr>`).join("")})},150)}
+$("#q").oninput=loadLib;$("#kind").onchange=loadLib;
+function connect(){const ws=new WebSocket((location.protocol=="https:"?"wss://":"ws://")+location.host+"/api/ws");
+ ws.onmessage=m=>{const d=JSON.parse(m.data);
+  if(d.type=="hello"){if(!localStorage.lang){lang=d.info.language;applyI18n()}if(!localStorage.theme){theme=d.info.theme;applyTheme()}}
+  else if(d.type=="status"){mode=d.mode;$("#mode").textContent=T[lang][d.mode];$("#mode").className="pill"+(d.mode=="auto"?" live":"");
+   $("#state").textContent=T[lang][d.engine.state];$("#clock").textContent=new Date(d.time).toLocaleTimeString(lang);
+   const c=d.engine.current;if(c){$("#title").textContent=c.item.track.title||c.item.track.filename;$("#artist").textContent=c.item.track.artist;$("#remain").textContent="-"+fmt(c.remaining_ms);$("#prog").style.width=(100*c.position_ms/Math.max(1,c.length_ms))+"%"}
+   $("#ml").style.width=Math.min(100,d.meters.l*100)+"%";$("#mr").style.width=Math.min(100,d.meters.r*100)+"%";
+   $("#enc").innerHTML=d.encoders.map(e=>`<div class="row"><span class="pill ${e.state=='live'?'live':''}">${e.state}</span>${esc(e.name)} <small class="${e.state=='error'?'err':'ok'}">${esc(e.url)} ${esc(e.message)}</small></div>`).join("")}
+  else if(d.type=="queue_changed")loadQueue();else if(d.type=="library_changed")loadLib();
+  else if(d.type=="alert"){const a=document.createElement("div");a.textContent=new Date().toLocaleTimeString(lang)+" "+d.message;$("#alerts").prepend(a)}};
+ ws.onclose=()=>setTimeout(connect,1000)}
+applyI18n();applyTheme();loadQueue();loadLib();connect();
+</script>
+</body>
+</html>

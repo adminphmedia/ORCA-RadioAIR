@@ -1,0 +1,88 @@
+//! ORCA RadioAIR – desktopová aplikace (macOS, Windows). Spouští engine + lokální API
+//! a v nativním okně zobrazuje UI (build z Lovable, případně vestavěný panel).
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::sync::Arc;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+#[cfg(target_os = "macos")]
+fn keep_awake() {
+    // Vysílací software nesmí usnout: vypnout App Nap a zabránit uspání systému, dokud aplikace běží.
+    let _ = std::process::Command::new("defaults").args(["write", "cz.orca.radioair", "NSAppSleepDisabled", "-bool", "YES"]).status();
+    let pid = std::process::id().to_string();
+    let _ = std::process::Command::new("caffeinate").args(["-i", "-s", "-w", &pid]).spawn();
+}
+#[cfg(not(target_os = "macos"))]
+fn keep_awake() {}
+
+fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,symphonia=warn,symphonia_bundle_mp3=error")).init();
+    keep_awake();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // přibalené zdroje: ffmpeg a UI
+            if let Ok(res) = app.path().resource_dir() {
+                let ff = res.join("resources").join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+                if ff.is_file() { std::env::set_var("ORCA_FFMPEG", &ff); }
+                let ui = res.join("ui");
+                if ui.join("index.html").is_file() { std::env::set_var("ORCA_UI_DIR", &ui); }
+            }
+            let data_dir = std::env::var_os("ORCA_DATA_DIR").map(Into::into).unwrap_or_else(orca_core::default_data_dir);
+            let orca = orca_core::Orca::start(&data_dir).map_err(|e| e.to_string())?;
+            let bind = orca.cfg.read().api.bind.clone();
+            app.manage(orca.clone());
+
+            // API server ve vlastním tokio runtime
+            let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            {
+                let orca = orca.clone();
+                let bind = bind.clone();
+                std::thread::Builder::new().name("orca-api".into()).spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build().expect("tokio");
+                    rt.block_on(async move {
+                        match tokio::net::TcpListener::bind(&bind).await {
+                            Ok(l) => { let _ = tx.send(Ok(())); let _ = axum::serve(l, orca_server::router(orca)).await; }
+                            Err(e) => { let _ = tx.send(Err(format!("Port {bind} je obsazený (běží už ORCA?): {e}"))); }
+                        }
+                    });
+                })?;
+            }
+            rx.recv().map_err(|e| e.to_string())??;
+
+            let url = tauri::Url::parse(&format!("http://{bind}/")).map_err(|e| e.to_string())?;
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                .title("ORCA RadioAIR")
+                .inner_size(1440.0, 900.0)
+                .min_inner_size(1100.0, 700.0)
+                .build()?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // zavření okna = konec vysílání → vyžádat potvrzení
+                api.prevent_close();
+                let w = window.clone();
+                let lang = w.app_handle().state::<Arc<orca_core::Orca>>().cfg.read().station.language.clone();
+                let (title, msg, yes, no) = if lang == "en" {
+                    ("Quit ORCA RadioAIR?", "Broadcasting and all streams will stop.", "Quit", "Cancel")
+                } else {
+                    ("Ukončit ORCA RadioAIR?", "Vysílání i všechny streamy se zastaví.", "Ukončit", "Zrušit")
+                };
+                w.dialog().message(msg).title(title).kind(MessageDialogKind::Warning)
+                    .buttons(MessageDialogButtons::OkCancelCustom(yes.into(), no.into()))
+                    .show(move |ok| {
+                        if ok {
+                            let app = w.app_handle();
+                            app.state::<Arc<orca_core::Orca>>().encoders.stop_all();
+                            app.exit(0);
+                        }
+                    });
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("chyba při spuštění ORCA RadioAIR");
+}

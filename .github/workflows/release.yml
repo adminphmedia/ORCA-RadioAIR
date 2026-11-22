@@ -1,0 +1,69 @@
+# Sestavení instalátorů ORCA RadioAIR pro macOS (Apple Silicon + Intel) a Windows.
+# Spuštění: GitHub → Actions → "Build installers" → Run workflow (nebo push tagu v*).
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+
+      # Volitelně: UI z Lovable (repozitář s Lovable projektem nastav v proměnné LOVABLE_UI_REPO, např. "pavel/orca-ui")
+      - name: Build UI (Lovable)
+        if: ${{ vars.LOVABLE_UI_REPO != '' }}
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/${{ vars.LOVABLE_UI_REPO }} ui-src
+          cd ui-src && npm ci && npm run build
+          rm -rf ../ui-dist/* && cp -R dist/* ../ui-dist/
+
+      # Windows: přibalit ffmpeg (LGPL build). macOS používá ffmpeg z Homebrew (brew install ffmpeg).
+      - name: Bundle ffmpeg (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp
+          Copy-Item (Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg-tmp | Select-Object -First 1).FullName apps/orca-desktop/resources/ffmpeg.exe
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build
+        working-directory: apps/orca-desktop
+        run: cargo tauri build ${{ matrix.args }}
+        env:
+          # Volitelné podepsání a notarizace pro macOS (Apple Developer účet):
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orca-radioair-${{ matrix.platform }}
+          path: |
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi

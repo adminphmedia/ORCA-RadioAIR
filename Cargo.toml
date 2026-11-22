@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/orca-core", "crates/orca-server", "apps/orca-desktop"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"

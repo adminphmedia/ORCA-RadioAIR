@@ -1,0 +1,3 @@
+target/
+apps/orca-desktop/gen/
+.DS_Store
