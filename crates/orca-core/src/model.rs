@@ -168,6 +168,9 @@ pub struct QueueItem {
     /// Reklamní blok, ke kterému položka patří ("YYYY-MM-DD HH:MM").
     #[serde(default)]
     pub break_ref: Option<String>,
+    /// Rebroadcast: id zdroje (stream / vstup zvukové karty)
+    #[serde(default)]
+    pub relay: Option<String>,
 }
 
 impl QueueItem {
@@ -177,7 +180,7 @@ impl QueueItem {
     }
 
     pub fn new(track: Track, source: &str, reason: impl Into<String>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None }
+        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None }
     }
 }
 

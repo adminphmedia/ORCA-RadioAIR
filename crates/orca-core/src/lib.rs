@@ -9,15 +9,22 @@ pub mod db;
 pub mod decode;
 pub mod encoder;
 pub mod engine;
+pub mod epg;
 pub mod events;
 pub mod library;
+pub mod meta;
 pub mod model;
 pub mod nowplaying;
+pub mod rds;
 pub mod recorder;
+pub mod relay;
 pub mod reports;
 pub mod rotation;
+pub mod sched;
+pub mod slides;
 pub mod spots;
 pub mod stitcher;
+pub mod weather;
 
 use anyhow::Result;
 use parking_lot::RwLock;
@@ -34,6 +41,9 @@ pub fn default_data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("ORCA RadioAIR")
 }
 
+/// Otevření samostatného okna s panelem studia (desktopová aplikace – více obrazovek): (panel, titulek)
+pub type WindowHook = Arc<dyn Fn(&str, &str) -> std::result::Result<(), String> + Send + Sync>;
+
 /// Celá běžící aplikace.
 pub struct Orca {
     pub data_dir: PathBuf,
@@ -46,6 +56,8 @@ pub struct Orca {
     pub encoders: Arc<encoder::EncoderManager>,
     pub automation: Arc<automation::Automation>,
     pub recorder: Arc<recorder::Recorder>,
+    pub meta: Arc<meta::MetaHub>,
+    pub window_hook: RwLock<Option<WindowHook>>,
 }
 
 impl Orca {
@@ -70,10 +82,11 @@ impl Orca {
         if let Err(e) = catalog::ensure_default_palette(&db) { log::warn!("palety: {e}"); }
         let encoders = encoder::EncoderManager::new(engine.clone(), cfg.clone(), events.clone());
         let automation = automation::Automation::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), events.clone(), data_dir.to_path_buf());
+        let meta = meta::MetaHub::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), data_dir.to_path_buf());
         if let Err(e) = library.start_watching() { events.alert("error", "watch_failed", e.to_string()); }
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()) }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, window_hook: RwLock::new(None) }))
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).
@@ -94,6 +107,7 @@ impl Orca {
         if serde_json::to_string(&old.autocue)? != serde_json::to_string(&new.autocue)? {
             log::info!("změna autocue – nové prahy platí pro nově analyzované soubory");
         }
+        if serde_json::to_string(&old.meta)? != serde_json::to_string(&new.meta)? || serde_json::to_string(&old.relay)? != serde_json::to_string(&new.relay)? { self.meta.refresh(); }
         self.events.emit(events::Event::ConfigChanged);
         Ok(())
     }

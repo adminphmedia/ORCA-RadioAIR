@@ -24,6 +24,9 @@ pub struct Config {
     pub spots: SpotsConfig,
     pub stitcher: StitcherConfig,
     pub recorder: RecorderConfig,
+    pub schedule: ScheduleConfig,
+    pub relay: RelayConfig,
+    pub meta: MetaConfig,
 }
 
 impl Default for Config {
@@ -42,6 +45,9 @@ impl Default for Config {
             spots: SpotsConfig::default(),
             stitcher: StitcherConfig::default(),
             recorder: RecorderConfig::default(),
+            schedule: ScheduleConfig::default(),
+            relay: RelayConfig::default(),
+            meta: MetaConfig::default(),
         }
     }
 }
@@ -560,4 +566,252 @@ pub struct RecorderConfig {
 
 impl Default for RecorderConfig {
     fn default() -> Self { Self { input_device: String::new(), default_kind: TrackKind::VoiceTrack, default_category: "Studio".into(), mono: true } }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Plánování
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScheduleConfig {
+    /// Automatika hraje podle vygenerovaného plánu vysílání (Jazler SOHO), jinak přímo z clocků.
+    pub use_plan: bool,
+    /// Plán generovat automaticky na tolik hodin dopředu (0 = jen ručně).
+    pub auto_generate_hours: u32,
+    /// Spouštět naplánované playlisty, programovou mřížku a události.
+    pub enabled: bool,
+    /// Jak dlouho dopředu se naplánované položky vkládají do decků (min).
+    pub lookahead_min: u32,
+    /// Složka pro automatický import playlistů (TXT/M3U, název = YYYYMMDD-HHMM.txt) → Imported/, _Errors.txt
+    pub playlist_import_dir: PathBuf,
+}
+
+impl Default for ScheduleConfig {
+    fn default() -> Self { Self { use_plan: false, auto_generate_hours: 0, enabled: true, lookahead_min: 30, playlist_import_dir: PathBuf::new() } }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rebroadcast (převzetí vysílání z jiného studia / streamu / vstupu zvukové karty)
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RelaySource {
+    pub id: String,
+    pub name: String,
+    /// url (Icecast/SHOUTcast/HLS/SRT/RTP/UDP – cokoli, co umí ffmpeg) | device (vstup zvukové karty)
+    #[serde(rename = "type")]
+    pub typ: String,
+    pub url: String,
+    pub device: String,
+    /// Záložní zdroje v pořadí (id) – při výpadku nebo tichu se přepne na další.
+    pub backup_ids: Vec<String>,
+    /// Ticho pod touto úrovní (dBFS) …
+    pub silence_db: f32,
+    /// … déle než tolik sekund = výpadek (0 = nehlídat).
+    pub silence_timeout_s: u32,
+    /// Max. čekání na připojení (s).
+    pub connect_timeout_s: u32,
+    pub gain_db: f32,
+    /// Když všechny zdroje selžou: vrátit se k automatice (true), jinak zkoušet znovu do konce převzetí.
+    pub fallback_to_auto: bool,
+}
+
+impl Default for RelaySource {
+    fn default() -> Self {
+        Self { id: uuid::Uuid::new_v4().to_string(), name: "Studio 2".into(), typ: "url".into(), url: String::new(), device: String::new(), backup_ids: vec![],
+            silence_db: -50.0, silence_timeout_s: 20, connect_timeout_s: 10, gain_db: 0.0, fallback_to_auto: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RelayConfig {
+    pub sources: Vec<RelaySource>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Metadata: RDS (FM), DAB+ (DLS / DL Plus, MOT Slideshow, SPI/EPG), stream, počasí
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetaConfig {
+    /// Krátký název (8 znaků – RDS PS, DAB short label)
+    pub station_short: String,
+    /// Střední název (16 znaků – DAB service label)
+    pub station_medium: String,
+    pub station_long: String,
+    pub slogan: String,
+    pub description: String,
+    pub url: String,
+    pub phone: String,
+    pub email: String,
+    pub sms: String,
+    /// Logo stanice (PNG/JPG) – slideshow, EPG
+    pub logo_path: String,
+    /// Barva pozadí slidů (#rrggbb)
+    pub brand_color: String,
+    /// Výchozí žánr / PTY stanice (0–31, ČR: 10 = Pop music)
+    pub pty: u8,
+    /// Texty (klíčová slova: {ARTIST} {TITLE} {ALBUM} {YEAR} {COMPOSER} {SHOW} {SHOW_NEXT} {SHOW_TIME} {HOST}
+    /// {NEXT} {NEXT_ARTIST} {NEXT_TITLE} {STATION} {SLOGAN} {URL} {PHONE} {SMS} {EMAIL}
+    /// {WEATHER_PLACE} {WEATHER_TEMP} {WEATHER_TEXT} {WEATHER_MIN} {WEATHER_MAX} {WEATHER_WIND} {TIME} {DATE})
+    pub tpl_song: String,
+    pub tpl_show: String,
+    pub tpl_next: String,
+    pub tpl_weather: String,
+    pub tpl_station: String,
+    /// Text během reklam, jinglů a ostatních položek (prázdné = text stanice)
+    pub tpl_other: String,
+    /// Stream (Icecast/SHOUTcast StreamTitle)
+    pub stream_song: String,
+    pub stream_other: String,
+    pub weather: WeatherConfig,
+    pub rds: RdsConfig,
+    pub dab: DabConfig,
+}
+
+impl Default for MetaConfig {
+    fn default() -> Self {
+        Self {
+            station_short: "ORCA".into(), station_medium: "ORCA RadioAIR".into(), station_long: "ORCA RadioAIR".into(), slogan: String::new(), description: String::new(),
+            url: String::new(), phone: String::new(), email: String::new(), sms: String::new(), logo_path: String::new(), brand_color: "#0f172a".into(), pty: 10,
+            tpl_song: "{ARTIST} - {TITLE}".into(),
+            tpl_show: "Právě vysíláme: {SHOW} {HOST_WITH}".into(),
+            tpl_next: "Dále uslyšíte: {NEXT}".into(),
+            tpl_weather: "Počasí {WEATHER_PLACE}: {WEATHER_TEMP} °C, {WEATHER_TEXT}".into(),
+            tpl_station: "{STATION} {SLOGAN}".into(),
+            tpl_other: String::new(),
+            stream_song: "{ARTIST} - {TITLE}".into(),
+            stream_other: "{STATION} – {SHOW}".into(),
+            weather: WeatherConfig::default(), rds: RdsConfig::default(), dab: DabConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeatherConfig {
+    pub enabled: bool,
+    pub place: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub refresh_min: u32,
+    /// Ruční text, když není internet / API (prázdné = nepoužít)
+    pub manual_text: String,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self { Self { enabled: false, place: "Jihlava".into(), lat: 49.3961, lon: 15.5912, refresh_min: 15, manual_text: String::new() } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RdsConfig {
+    pub enabled: bool,
+    /// PI kód (hex, např. 2A01)
+    pub pi: String,
+    pub tp: bool,
+    pub ta: bool,
+    pub ms_music: bool,
+    pub di_stereo: bool,
+    /// static = jen název, song = interpret/název po 8 znacích (pozor: PS není určené pro text),
+    /// rotate = střídání textů v ps_texts
+    pub ps_mode: String,
+    pub ps_texts: Vec<String>,
+    pub ps_interval_s: u32,
+    /// Šablony RadioTextu, střídají se (song, show, next, weather, station nebo vlastní text s klíčovými slovy)
+    pub rt_rotation: Vec<String>,
+    pub rt_interval_s: u32,
+    pub rtplus: bool,
+    /// Přepis do ASCII (bez diakritiky) – bezpečné pro všechny přijímače
+    pub ascii: bool,
+    /// PTY podle pořadu z programové mřížky
+    pub pty_from_show: bool,
+    pub outputs: Vec<RdsOutput>,
+}
+
+impl Default for RdsConfig {
+    fn default() -> Self {
+        Self { enabled: false, pi: "2000".into(), tp: false, ta: false, ms_music: true, di_stereo: true, ps_mode: "static".into(), ps_texts: vec!["{STATION}".into()], ps_interval_s: 4,
+            rt_rotation: vec!["song".into(), "show".into(), "weather".into()], rt_interval_s: 15, rtplus: true, ascii: true, pty_from_show: true, outputs: vec![] }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RdsOutput {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    /// uecp (EBU SPB 490) | ascii (textové příkazy – šablony)
+    pub protocol: String,
+    /// ascii: generic | pira | custom
+    pub preset: String,
+    /// tcp | udp | serial | file
+    pub transport: String,
+    pub host: String,
+    pub port: u16,
+    pub serial_port: String,
+    pub baud: u32,
+    pub file_path: String,
+    pub uecp_site: u16,
+    pub uecp_encoder: u8,
+    /// Vlastní příkazy (ascii/custom): {PS} {RT} {PI} {PTY} {TP} {TA} {RTP_T1} {RTP_S1} {RTP_L1} {RTP_T2} {RTP_S2} {RTP_L2}
+    pub cmd_ps: String,
+    pub cmd_rt: String,
+    pub cmd_pi: String,
+    pub cmd_pty: String,
+    pub cmd_rtplus: String,
+    pub line_end: String,
+}
+
+impl Default for RdsOutput {
+    fn default() -> Self {
+        Self { id: uuid::Uuid::new_v4().to_string(), name: "RDS kodér".into(), enabled: true, protocol: "ascii".into(), preset: "generic".into(), transport: "tcp".into(),
+            host: "192.168.1.50".into(), port: 1024, serial_port: String::new(), baud: 19200, file_path: String::new(), uecp_site: 0, uecp_encoder: 0,
+            cmd_ps: "PS={PS}".into(), cmd_rt: "RT={RT}".into(), cmd_pi: "PI={PI}".into(), cmd_pty: "PTY={PTY}".into(), cmd_rtplus: "RT+TAG={RTP_T1},{RTP_S1},{RTP_L1},{RTP_T2},{RTP_S2},{RTP_L2},1,0".into(), line_end: "\\r\\n".into() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DabConfig {
+    pub enabled: bool,
+    /// Složka pro ODR-PadEnc a další DAB kodéry (prázdné = <data>/DAB)
+    pub output_dir: PathBuf,
+    /// Střídání DLS: song | show | next | weather | station | vlastní text s klíčovými slovy
+    pub dls_rotation: Vec<String>,
+    pub dls_interval_s: u32,
+    pub dl_plus: bool,
+    /// MOT Slideshow
+    pub sls_enabled: bool,
+    /// Které slidy generovat: cover, presenter, show, weather, station, next
+    pub sls_slides: Vec<String>,
+    pub sls_width: u32,
+    pub sls_height: u32,
+    /// Max. velikost slidu v kB (DAB doporučení 50 kB)
+    pub sls_max_kb: u32,
+    /// Jak dlouho držet jeden slide v current.jpg (s) – pro kodéry, které čtou jediný soubor
+    pub sls_interval_s: u32,
+    /// SPI / EPG (ETSI TS 102 818)
+    pub epg_enabled: bool,
+    pub ecc: String,
+    pub eid: String,
+    pub sid: String,
+    pub scids: u8,
+    /// FM frekvence pro bearer v SPI (MHz, prázdné = bez FM)
+    pub fm_freq: String,
+    /// Veřejná adresa serveru pro odkazy na obrázky v SPI (např. http://radio.example.cz:8750)
+    pub public_url: String,
+    pub epg_days: u32,
+    /// HTTP push (komerční DAB headendy): URL šablona s {DLS} {DLS_URLENC}, metoda GET/POST
+    pub http_push: Vec<String>,
+}
+
+impl Default for DabConfig {
+    fn default() -> Self {
+        Self { enabled: false, output_dir: PathBuf::new(), dls_rotation: vec!["song".into(), "show".into(), "next".into(), "weather".into()], dls_interval_s: 8, dl_plus: true,
+            sls_enabled: true, sls_slides: vec!["cover".into(), "presenter".into(), "show".into(), "weather".into(), "station".into()], sls_width: 320, sls_height: 240, sls_max_kb: 50, sls_interval_s: 15,
+            epg_enabled: true, ecc: "E2".into(), eid: "1001".into(), sid: "2001".into(), scids: 0, fm_freq: String::new(), public_url: String::new(), epg_days: 7, http_push: vec![] }
+    }
 }

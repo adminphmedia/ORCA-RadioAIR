@@ -23,6 +23,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             // přibalené zdroje: ffmpeg a UI
             if let Ok(res) = app.path().resource_dir() {
@@ -53,6 +54,23 @@ fn main() {
             }
             rx.recv().map_err(|e| e.to_string())??;
 
+            // samostatná okna panelů (více obrazovek) – pozice a velikost si pamatuje window-state
+            {
+                let handle = app.handle().clone();
+                let bind = bind.clone();
+                *orca.window_hook.write() = Some(Arc::new(move |panel: &str, title: &str| {
+                    let label = format!("panel-{panel}");
+                    if let Some(w) = handle.get_webview_window(&label) { let _ = w.unminimize(); let _ = w.show(); let _ = w.set_focus(); return Ok(()); }
+                    let url = tauri::Url::parse(&format!("http://{bind}/?panel={panel}")).map_err(|e| e.to_string())?;
+                    let (h2, title) = (handle.clone(), format!("ORCA RadioAIR – {title}"));
+                    handle.run_on_main_thread(move || {
+                        if let Err(e) = WebviewWindowBuilder::new(&h2, label, WebviewUrl::External(url)).title(title).inner_size(900.0, 700.0).min_inner_size(320.0, 240.0).build() {
+                            log::error!("okno panelu: {e}");
+                        }
+                    }).map_err(|e| e.to_string())
+                }));
+            }
+
             let url = tauri::Url::parse(&format!("http://{bind}/")).map_err(|e| e.to_string())?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("ORCA RadioAIR")
@@ -63,6 +81,8 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // okna panelů se zavírají normálně, potvrzení jen u hlavního okna
+                if window.label() != "main" { return; }
                 // zavření okna = konec vysílání → vyžádat potvrzení
                 api.prevent_close();
                 let w = window.clone();

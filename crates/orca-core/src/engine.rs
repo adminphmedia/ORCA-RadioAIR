@@ -41,6 +41,9 @@ pub struct OutputStatus { pub device: String, pub ok: bool, pub sample_rate: u32
 pub struct EngineStatus {
     pub state: PlayState,
     pub stop_after_current: bool,
+    /// Opakovat právě hrající položku (Jazler Loop)
+    #[serde(default)]
+    pub loop_current: bool,
     pub current: Option<VoiceStatus>,
     pub voices: Vec<VoiceStatus>,
     pub output: OutputStatus,
@@ -52,6 +55,10 @@ pub enum Cmd {
     Next,
     Pause,
     StopAfterCurrent(bool),
+    /// Opakovat právě hrající položku
+    Loop(bool),
+    /// Přehrát právě hrající položku znovu od začátku
+    Restart,
     /// Okamžitě přehrát přes hlavní stopu (instant jingle).
     Instant(Track),
     /// Zastavit všechny instant jingly.
@@ -90,6 +97,8 @@ struct Prefetch {
     done: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
+    /// Rebroadcast: přehrávač začal číst
+    live: Arc<AtomicBool>,
 }
 
 impl Drop for Prefetch { fn drop(&mut self) { self.stop.store(true, Ordering::SeqCst); } }
@@ -141,7 +150,23 @@ impl Prefetch {
           }
             d.store(true, Ordering::SeqCst);
         });
-        Prefetch { cons, done, stop, failed }
+        Prefetch { cons, done, stop, failed, live: Arc::new(AtomicBool::new(true)) }
+    }
+
+    /// Rebroadcast: živý zdroj (stream / vstup zvukové karty) se záložními zdroji.
+    fn start_relay(cfg: Config, source_id: String, max_frames: u64, rate: u32) -> Prefetch {
+        let (prod, cons) = rtrb::RingBuffer::<f32>::new(rate as usize * 2 * PREFETCH_SECONDS);
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let failed = Arc::new(AtomicBool::new(false));
+        let live = Arc::new(AtomicBool::new(false));
+        let (d, s, f, l) = (done.clone(), stop.clone(), failed.clone(), live.clone());
+        let _ = std::thread::Builder::new().name("orca-relay".into()).spawn(move || {
+            let sink = crate::relay::Sink { prod, stop: s, written: 0, max_frames, live: l };
+            if crate::relay::run(cfg, source_id, rate, sink) { f.store(true, Ordering::SeqCst); }
+            d.store(true, Ordering::SeqCst);
+        });
+        Prefetch { cons, done, stop, failed, live }
     }
 
     fn buffered_frames(&self) -> usize { self.cons.slots() / 2 }
@@ -207,6 +232,7 @@ impl Voice {
 
     /// Přimíchá `frames` snímků do `mix`.
     fn render(&mut self, mix: &mut [f32], frames: usize, extra_gain: f32) {
+        if !self.src.live.load(Ordering::Relaxed) { self.src.live.store(true, Ordering::Relaxed); }
         let want = frames.min((self.len - self.pos.min(self.len)) as usize);
         let avail = self.src.buffered_frames().min(want);
         if avail < want && !self.src.done.load(Ordering::Acquire) { self.underruns += 1; }
@@ -247,6 +273,7 @@ impl Engine {
             status: RwLock::new(EngineStatus {
                 state: PlayState::Stopped,
                 stop_after_current: false,
+                loop_current: false,
                 current: None,
                 voices: vec![],
                 output: OutputStatus { device: String::new(), ok: false, sample_rate: ENGINE_RATE, underruns: 0, message: String::new() },
@@ -363,6 +390,12 @@ impl Engine {
                 None => (Voice::new(item, Prefetch::start_segments(vec![], rate), rate, 0.0, overlay), None),
             };
         }
+        if let Some(rid) = item.relay.clone() {
+            let (_, _, co) = item.track.effective_cues();
+            let max_frames = (co.max(0) as u64 * rate as u64) / 1000;
+            let src = preloaded.unwrap_or_else(|| Prefetch::start_relay(self.cfg.read().clone(), rid, max_frames, rate));
+            return (Voice::new(item, src, rate, 0.0, overlay), None);
+        }
         let (normalize, target) = { let c = self.cfg.read(); (c.audio.normalize, c.audio.target_lufs) };
         let gain_db = item.track.playback_gain_db(normalize, target);
         let (cue_in, _, cue_out) = item.track.effective_cues();
@@ -400,6 +433,7 @@ impl Engine {
         let mut preloaded: Option<(String, Prefetch)> = None;
         let mut state = if self.cfg.read().auto.start_in_auto { PlayState::Playing } else { PlayState::Stopped };
         let mut stop_after = false;
+        let mut loop_current = false;
         let mut mix = vec![0f32; BLOCK * 2];
         let mut clock_start = Instant::now();
         let mut frames_rendered: u64 = 0;
@@ -440,6 +474,15 @@ impl Engine {
                         if let Some((v, bed)) = self.start_next(&mut preloaded) { voices.push(v); if let Some(b) = bed { voices.push(b); } }
                     }
                     Cmd::StopAfterCurrent(b) => stop_after = b,
+                    Cmd::Loop(b) => loop_current = b,
+                    Cmd::Restart => {
+                        if let Some(cur) = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade) {
+                            let mut it = cur.item.clone();
+                            it.id = uuid::Uuid::new_v4().to_string();
+                            self.queue_push(it, Some(0));
+                            let _ = self.cmd_tx.send(Cmd::Next);
+                        }
+                    }
                     Cmd::Instant(t) => {
                         let mut item = QueueItem::new(t, "instant", "instant");
                         self.refresh(&mut item);
@@ -491,6 +534,17 @@ impl Engine {
             }
 
             // --- segue / start
+            if state == PlayState::Playing && loop_current {
+                // smyčka: před bodem mixu vložit stejnou položku znovu na začátek fronty
+                if let Some(cur) = voices.iter().rev().find(|v| !v.overlay && !v.segued) {
+                    if cur.pos + BLOCK as u64 * 2 >= cur.mix_at && self.queue.lock().front().map(|f| f.track.id != cur.item.track.id || f.relay.is_some()).unwrap_or(true) && cur.item.relay.is_none() && cur.item.stitch.is_none() {
+                        let mut it = cur.item.clone();
+                        it.id = uuid::Uuid::new_v4().to_string();
+                        it.reason = "smyčka (loop)".into();
+                        self.queue_push(it, Some(0));
+                    }
+                }
+            }
             if state == PlayState::Playing {
                 let main_count = voices.iter().filter(|v| !v.overlay && !v.kill_after_fade).count();
                 let need_next = match voices.iter().rev().find(|v| !v.overlay && !v.segued) {
@@ -625,6 +679,7 @@ impl Engine {
                 let mut st = self.status.write();
                 st.state = state;
                 st.stop_after_current = stop_after;
+                st.loop_current = loop_current;
                 st.voices = voices.iter().map(|v| v.status(rate)).collect();
                 st.current = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade).or_else(|| voices.iter().rev().find(|v| !v.overlay)).map(|v| v.status(rate));
                 if let Some(o) = &output { st.output.underruns = o.underruns.load(Ordering::Relaxed); }
@@ -638,6 +693,11 @@ impl Engine {
         match (&head, preloaded.as_ref()) {
             (Some(h), Some((id, _))) if *id == h.id => {}
             (Some(h), _) if h.stitch.is_some() || h.is_attached_overlay() => *preloaded = None,
+            (Some(h), _) if h.relay.is_some() => {
+                let rate = self.sample_rate();
+                let max_frames = (h.track.effective_cues().2.max(0) as u64 * rate as u64) / 1000;
+                *preloaded = Some((h.id.clone(), Prefetch::start_relay(self.cfg.read().clone(), h.relay.clone().unwrap_or_default(), max_frames, rate)));
+            }
             (Some(h), _) => {
                 let mut h = h.clone();
                 self.refresh(&mut h);

@@ -171,6 +171,42 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE breaks_inserted(date TEXT NOT NULL, break_time TEXT NOT NULL, inserted_at TEXT NOT NULL, PRIMARY KEY(date, break_time));
     CREATE TABLE spot_presets(id INTEGER PRIMARY KEY, name TEXT NOT NULL, slots TEXT NOT NULL DEFAULT '[]');
     "#,
+    // v3 – plánování: pořady, moderátoři, playlisty, programová mřížka, události, epizody, plán vysílání
+    r#"
+    CREATE TABLE sched_docs(
+        id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        data TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX ix_sched_docs ON sched_docs(kind);
+    CREATE TABLE episodes(
+        id INTEGER PRIMARY KEY,
+        show_id INTEGER NOT NULL,
+        num INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        parts TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'ready',
+        air_date TEXT,
+        created_at TEXT NOT NULL,
+        play_count INTEGER NOT NULL DEFAULT 0,
+        last_aired TEXT
+    );
+    CREATE INDEX ix_episodes_show ON episodes(show_id, num);
+    CREATE TABLE plan_items(
+        id INTEGER PRIMARY KEY,
+        date TEXT NOT NULL,
+        hour INTEGER NOT NULL,
+        pos INTEGER NOT NULL,
+        item TEXT NOT NULL,
+        locked INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL DEFAULT 'planned'
+    );
+    CREATE INDEX ix_plan ON plan_items(date, hour, pos);
+    CREATE TABLE sched_fired(key TEXT PRIMARY KEY, fired_at TEXT NOT NULL);
+    "#,
 ];
 
 pub struct Db {

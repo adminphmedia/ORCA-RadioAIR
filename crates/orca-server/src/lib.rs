@@ -26,6 +26,7 @@ pub(crate) type St = Arc<Orca>;
 pub(crate) type ApiResult = Result<Response, ApiError>;
 
 mod ext;
+mod plan;
 
 pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 impl IntoResponse for ApiError {
@@ -74,6 +75,7 @@ pub fn router(orca: St) -> Router {
         .route("/encoders", get(encoders_get))
         .route("/encoders/{id}/{action}", post(encoder_action))
         .merge(ext::routes())
+        .merge(plan::routes())
         .layer(middleware::from_fn_with_state(orca.clone(), auth));
 
     let ui_dir = {
@@ -89,7 +91,7 @@ pub fn router(orca: St) -> Router {
         .allow_headers(Any)
         .allow_private_network(true); // Chrome: přístup z https stránky (Lovable náhled) na localhost
 
-    let mut app = Router::new().nest("/api", api);
+    let mut app = Router::new().nest("/api", api).merge(plan::public_routes());
     app = match ui_dir {
         Some(d) if d.join("index.html").is_file() => {
             log::info!("UI ze složky {}", d.display());
@@ -142,6 +144,9 @@ async fn transport(State(o): State<St>, Path(action): Path<String>) -> ApiResult
         "pause" => Cmd::Pause,
         "stop-after-current" => Cmd::StopAfterCurrent(true),
         "cancel-stop-after-current" => Cmd::StopAfterCurrent(false),
+        "loop" => Cmd::Loop(true),
+        "cancel-loop" => Cmd::Loop(false),
+        "restart" => Cmd::Restart,
         _ => return Err(bad("neznámá akce")),
     };
     o.engine.send(cmd);
@@ -188,7 +193,7 @@ async fn track_patch(State(o): State<St>, Path(id): Path<i64>, Json(p): Json<Tra
 }
 async fn track_cover(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
     let t = o.db.get_track(id)?.ok_or_else(|| not_found("skladba"))?;
-    let res = tokio::task::spawn_blocking(move || orca_core::library::read_cover(std::path::Path::new(&t.path))).await?;
+    let res = tokio::task::spawn_blocking(move || orca_core::library::cover_for(&t)).await?;
     match res {
         Some((data, mime)) => Ok(([(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("image/jpeg"))), (header::CACHE_CONTROL, HeaderValue::from_static("max-age=3600"))], Body::from(data)).into_response()),
         None => Err(not_found("obal")),

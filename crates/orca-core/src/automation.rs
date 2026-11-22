@@ -25,6 +25,7 @@ pub struct Automation {
     db: Arc<Db>,
     cfg: Arc<RwLock<Config>>,
     engine: Arc<Engine>,
+    #[allow(dead_code)]
     encoders: Arc<EncoderManager>,
     events: EventBus,
     np: NowPlayingWriter,
@@ -33,6 +34,8 @@ pub struct Automation {
     cursor: Mutex<(String, usize)>,
     history: Mutex<VecDeque<(String, Track)>>,
     last_no_tracks_alert: Mutex<Option<Instant>>,
+    last_sched: Mutex<Option<Instant>>,
+    last_maint: Mutex<Option<Instant>>,
 }
 
 pub fn now_local(cfg: &Config) -> DateTime<Local> { Local::now() + chrono::Duration::seconds(cfg.station.time_offset_s) }
@@ -43,11 +46,11 @@ impl Automation {
         let a = Arc::new(Self {
             db, cfg, engine, encoders, events: events.clone(), np: NowPlayingWriter { data_dir }, mode: RwLock::new(mode),
             log_ids: Mutex::new(HashMap::new()), cursor: Mutex::new((String::new(), 0)), history: Mutex::new(VecDeque::new()),
-            last_no_tracks_alert: Mutex::new(None),
+            last_no_tracks_alert: Mutex::new(None), last_sched: Mutex::new(None), last_maint: Mutex::new(None),
         });
         let rx = events.subscribe();
         { let a = a.clone(); std::thread::Builder::new().name("orca-auto-events".into()).spawn(move || { while let Ok(ev) = rx.recv() { a.on_event(ev); } }).ok(); }
-        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.breaks_tick(); a.fill_queue(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
+        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.breaks_tick(); a.sched_tick(); a.fill_queue(); a.maintenance(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
         a
     }
 
@@ -170,6 +173,171 @@ impl Automation {
         Ok(n)
     }
 
+    /// Vloží položky tak, aby začaly co nejblíž cílovému času (na hranici mezi položkami), nebo okamžitě.
+    /// Vrací false, pokud fronta ještě k cílovému času nesahá (zkusit později).
+    fn insert_at(&self, items: Vec<QueueItem>, target: DateTime<Local>, immediate: bool, override_auto: bool, cfg: &Config) -> bool {
+        let now = now_local(cfg);
+        if immediate {
+            if now + chrono::Duration::milliseconds(300) < target { return false; }
+            let n = items.len();
+            for (i, it) in items.into_iter().enumerate() { self.engine.queue_push(it, Some(i)); }
+            if override_auto { self.drop_auto_after(n); }
+            self.engine.send(crate::engine::Cmd::Next);
+            return true;
+        }
+        let q = self.queue_with_eta();
+        let end = self.queue_end(&q, cfg);
+        if end < target && self.mode() == Mode::Auto { return false; }
+        let parse = |s: &str| DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Local));
+        let mut bounds: Vec<(usize, DateTime<Local>)> = q.iter().enumerate().filter(|(_, i)| !i.is_attached_overlay())
+            .filter_map(|(k, i)| i.eta.as_deref().and_then(parse).map(|e| (k, e))).collect();
+        bounds.push((q.len(), end));
+        let idx = bounds.iter().min_by_key(|(_, e)| (*e - target).num_milliseconds().abs()).map(|(k, _)| *k).unwrap_or(q.len());
+        let n = items.len();
+        for (k, it) in items.into_iter().enumerate() { self.engine.queue_push(it, Some(idx + k)); }
+        if override_auto { self.drop_auto_after(idx + n); }
+        true
+    }
+
+    /// Override: zruší automatikou vybrané položky za vloženým playlistem.
+    fn drop_auto_after(&self, from: usize) {
+        let ids: Vec<String> = self.engine.queue_snapshot().into_iter().skip(from).filter(|i| i.source == "auto" || i.source == "plan").map(|i| i.id).collect();
+        for id in ids { self.engine.queue_remove(&id); }
+    }
+
+    /// Naplánované playlisty, programová mřížka a události.
+    fn sched_tick(&self) {
+        {
+            let mut l = self.last_sched.lock();
+            if l.map(|t| t.elapsed() < Duration::from_millis(900)).unwrap_or(false) { return; }
+            *l = Some(Instant::now());
+        }
+        let cfg = self.cfg.read().clone();
+        if !cfg.schedule.enabled { return; }
+        let now = now_local(&cfg);
+        let today = now.date_naive();
+        for date in [today, today.succ_opt().unwrap_or(today)] {
+            let occ = match crate::sched::day_occurrences(&self.db, date) { Ok(o) => o, Err(e) => { log::error!("plánování: {e}"); return; } };
+            for o in occ.into_iter().filter(|o| !o.fired) {
+                let Some(t) = crate::sched::occurrence_dt(date, &o.time) else { continue };
+                if t < now - chrono::Duration::seconds(120) {
+                    // zmeškané (program neběžel) – už nespouštět
+                    let _ = crate::sched::mark_fired(&self.db, &o.key);
+                    continue;
+                }
+                if t > now + chrono::Duration::minutes(cfg.schedule.lookahead_min.max(1) as i64) { continue; }
+                if let Err(e) = self.fire(&cfg, &o, t, now) { log::error!("plánování {}: {e}", o.name); let _ = crate::sched::mark_fired(&self.db, &o.key); }
+            }
+        }
+    }
+
+    fn fire(&self, cfg: &Config, o: &crate::sched::Occurrence, t: DateTime<Local>, now: DateTime<Local>) -> anyhow::Result<()> {
+        use crate::sched::{self, GridEntry, PlItem, Playlist, SchedEvent};
+        let due = now >= t - chrono::Duration::milliseconds(300);
+        let reason_base = format!("{} {} ({})", match o.source.as_str() { "playlist" => "playlist", "grid" => "program", _ => "událost" }, o.name, &o.time[..5]);
+        // (položky, okamžitě, override)
+        let mut plan: Option<(Vec<PlItem>, bool, bool, bool)> = None; // + shuffle
+        match o.source.as_str() {
+            "playlist" => {
+                let Some(p) = sched::get::<Playlist>(&self.db, o.id)? else { return sched::mark_fired(&self.db, &o.key) };
+                plan = Some((p.items, p.start_immediately, p.mode == "override", p.shuffle));
+            }
+            "grid" => {
+                let Some(g) = sched::get::<GridEntry>(&self.db, o.id)? else { return sched::mark_fired(&self.db, &o.key) };
+                match g.content.as_str() {
+                    "episode" => plan = Some((vec![PlItem { typ: "episode".into(), show_id: g.show_id, mode: g.episode_mode.clone(), nth: g.nth, ..Default::default() }], g.start_immediately, false, false)),
+                    "playlist" => if let Some(p) = g.playlist_id.and_then(|id| sched::get::<Playlist>(&self.db, id).ok().flatten()) { plan = Some((p.items, g.start_immediately || p.start_immediately, p.mode == "override", p.shuffle)); },
+                    "relay" => {
+                        let dur = (o.duration_ms / 1000) as u32;
+                        plan = Some((vec![PlItem { typ: "relay".into(), relay_id: g.relay_id.clone(), duration_s: dur, ..Default::default() }], g.start_immediately, true, false));
+                    }
+                    "live" => { if due { self.set_mode(Mode::Manual); self.events.alert("info", "sched_live", format!("{}: živé vysílání – automatika přepnuta na RUČNĚ", o.name)); } else { return Ok(()); } }
+                    _ => {}
+                }
+                if plan.is_none() { return if due { sched::mark_fired(&self.db, &o.key) } else { Ok(()) }; }
+            }
+            _ => {
+                let Some(e) = sched::get::<SchedEvent>(&self.db, o.id)? else { return sched::mark_fired(&self.db, &o.key) };
+                let imm = e.start_immediately;
+                match e.action.as_str() {
+                    "playlist" => if let Some(p) = e.playlist_id.and_then(|id| sched::get::<Playlist>(&self.db, id).ok().flatten()) { plan = Some((p.items, imm || p.start_immediately, p.mode == "override", p.shuffle)); },
+                    "episode" => plan = Some((vec![PlItem { typ: "episode".into(), show_id: e.show_id, mode: "next".into(), ..Default::default() }], imm, false, false)),
+                    "relay_start" => plan = Some((vec![PlItem { typ: "relay".into(), relay_id: e.relay_id.clone(), duration_s: e.duration_s, ..Default::default() }], imm, true, false)),
+                    "track" => plan = Some((vec![PlItem { typ: "track".into(), track_id: e.track_id, ..Default::default() }], imm, false, false)),
+                    "stitch" => plan = Some((vec![PlItem { typ: "stitch".into(), stitch: e.stitch.clone(), ..Default::default() }], imm, false, false)),
+                    "break" => {
+                        if !due { return Ok(()); }
+                        let _ = self.insert_break_now(t.date_naive(), &t.format("%H:%M").to_string());
+                    }
+                    other => {
+                        if !due { return Ok(()); }
+                        match other {
+                            "mode_auto" => self.set_mode(Mode::Auto),
+                            "mode_manual" => self.set_mode(Mode::Manual),
+                            "relay_stop" => {
+                                if self.engine.snapshot().current.map(|c| c.item.relay.is_some()).unwrap_or(false) { self.engine.send(crate::engine::Cmd::Next); }
+                                let ids: Vec<String> = self.engine.queue_snapshot().into_iter().filter(|i| i.relay.is_some()).map(|i| i.id).collect();
+                                for id in ids { self.engine.queue_remove(&id); }
+                            }
+                            "clear_queue" => self.engine.queue_clear(),
+                            "stop_after" => self.engine.send(crate::engine::Cmd::StopAfterCurrent(true)),
+                            _ => {}
+                        }
+                    }
+                }
+                if plan.is_none() { return if due { sched::mark_fired(&self.db, &o.key) } else { Ok(()) }; }
+            }
+        }
+        let Some((mut items, immediate, override_auto, shuffle)) = plan else { return Ok(()) };
+        if self.mode() != Mode::Auto {
+            // v ručním režimu se playlisty nespouští samy
+            if due { self.events.alert("warning", "sched_skipped", format!("{reason_base}: přeskočeno – automatika je v režimu RUČNĚ")); sched::mark_fired(&self.db, &o.key)?; }
+            return Ok(());
+        }
+        if shuffle { use rand::seq::SliceRandom; items.shuffle(&mut rand::thread_rng()); }
+        // rozvinout až těsně před vložením (výběr podle aktuální rotace)
+        let q = self.queue_with_eta();
+        if !immediate && self.queue_end(&q, cfg) < t { return Ok(()); }
+        if immediate && !due { return Ok(()); }
+        let (qitems, aired, warnings) = sched::expand(&self.db, cfg, &items, "playlist", &reason_base, 0)?;
+        for w in warnings { self.events.alert("warning", "sched_item", format!("{reason_base}: {w}")); }
+        if qitems.is_empty() { return sched::mark_fired(&self.db, &o.key); }
+        let n = qitems.len();
+        if self.insert_at(qitems, t, immediate, override_auto, cfg) {
+            for e in aired { let _ = sched::mark_episode_aired(&self.db, e); }
+            sched::mark_fired(&self.db, &o.key)?;
+            log::info!("{reason_base}: vloženo {n} položek{}", if immediate { " (okamžitě)" } else { "" });
+        }
+        Ok(())
+    }
+
+    /// Údržba: automatické generování plánu, import playlistů ze složky.
+    fn maintenance(&self) {
+        {
+            let mut l = self.last_maint.lock();
+            if l.map(|t| t.elapsed() < Duration::from_secs(30)).unwrap_or(false) { return; }
+            *l = Some(Instant::now());
+        }
+        let cfg = self.cfg.read().clone();
+        if cfg.schedule.auto_generate_hours > 0 {
+            let now = now_local(&cfg);
+            let mut by_date: std::collections::BTreeMap<chrono::NaiveDate, Vec<u32>> = Default::default();
+            for i in 0..cfg.schedule.auto_generate_hours.min(168) as i64 {
+                let t = now + chrono::Duration::hours(i);
+                by_date.entry(t.date_naive()).or_default().push(chrono::Timelike::hour(&t));
+            }
+            for (d, hours) in by_date {
+                if let Err(e) = crate::sched::generate_plan(&self.db, &cfg, d, &hours, false) { log::error!("generování plánu: {e}"); }
+            }
+        }
+        if !cfg.schedule.playlist_import_dir.as_os_str().is_empty() {
+            match crate::sched::auto_import_dir(&self.db, &cfg.schedule.playlist_import_dir) {
+                Ok(v) => for m in v { log::info!("{m}"); },
+                Err(e) => log::warn!("import playlistů: {e}"),
+            }
+        }
+    }
+
     fn fill_queue(&self) {
         if self.mode() != Mode::Auto { return; }
         let cfg = self.cfg.read().clone();
@@ -179,6 +347,23 @@ impl Automation {
             let q = self.queue_with_eta();
             // čas, kdy začne nově přidaná položka → podle něj vybereme clock
             let slot_time = if q.is_empty() { now_local(&cfg) } else { self.queue_end(&q, &cfg) };
+            if cfg.schedule.use_plan {
+                match crate::sched::plan_take(&self.db, &slot_time) {
+                    Ok(Some(it)) => {
+                        let reason = format!("plán vysílání {}", slot_time.format("%d.%m. %H:00"));
+                        match crate::sched::expand(&self.db, &cfg, std::slice::from_ref(&it), "plan", &reason, 0) {
+                            Ok((items, aired, _)) => {
+                                for i in items { self.engine.queue_push(i, None); }
+                                for e in aired { let _ = crate::sched::mark_episode_aired(&self.db, e); }
+                            }
+                            Err(e) => log::error!("plán: {e}"),
+                        }
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::error!("plán: {e}"),
+                }
+            }
             let Some(clock) = clock_for(&cfg, &slot_time) else { return };
             if clock.steps.is_empty() { return; }
             let key = format!("{}|{}", grid_key(&slot_time), clock.name);
@@ -236,7 +421,6 @@ impl Automation {
                         h.push_front((now_local(&cfg).to_rfc3339(), item.track.clone()));
                         h.truncate(50);
                     }
-                    self.encoders.update_metadata(&text);
                     let hist: Vec<(String, Track)> = self.history.lock().iter().cloned().collect();
                     let next = self.queue_with_eta();
                     self.np.update(&cfg, &item.track, &text, &hist, &next);
