@@ -109,3 +109,43 @@ mod tests {
         assert_eq!(b.mix_ms, b.cue_out_ms);
     }
 }
+
+
+/// Obálka průběhu signálu pro editor (špičky a RMS po bucketech, 0–255), uložená do mezipaměti.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Waveform { pub duration_ms: i64, pub points: usize, pub peak: Vec<u8>, pub rms: Vec<u8> }
+
+pub fn waveform(path: &std::path::Path, cache_dir: &std::path::Path, key: &str, points: usize) -> anyhow::Result<Waveform> {
+    let points = points.clamp(200, 8000);
+    let cache = cache_dir.join(format!("{key}-{points}.json"));
+    if let Ok(b) = std::fs::read(&cache) { if let Ok(w) = serde_json::from_slice::<Waveform>(&b) { return Ok(w); } }
+    let mut dec = crate::decode::AudioDecoder::open(path)?;
+    let rate = dec.sample_rate as f64;
+    let mut frames: Vec<f32> = Vec::new(); // mono absolutní hodnoty (max L/R), podvzorkováno po 4
+    let mut buf = Vec::new();
+    let mut total = 0u64;
+    let mut sq_all: Vec<f32> = Vec::new();
+    while dec.next_stereo(&mut buf)? {
+        for (i, fr) in buf.chunks_exact(2).enumerate() {
+            let a = fr[0].abs().max(fr[1].abs());
+            if (total + i as u64) % 4 == 0 { frames.push(a); sq_all.push((fr[0] * fr[0] + fr[1] * fr[1]) * 0.5); }
+        }
+        total += (buf.len() / 2) as u64;
+    }
+    let duration_ms = (total as f64 * 1000.0 / rate) as i64;
+    let n = frames.len().max(1);
+    let mut peak = Vec::with_capacity(points);
+    let mut rms = Vec::with_capacity(points);
+    for k in 0..points {
+        let (a, b) = (k * n / points, ((k + 1) * n / points).max(k * n / points + 1).min(n));
+        let mut p = 0f32; let mut s = 0f64;
+        for i in a..b.min(frames.len()) { p = p.max(frames[i]); s += sq_all[i] as f64; }
+        let r = (s / (b - a).max(1) as f64).sqrt() as f32;
+        peak.push((p.min(1.0) * 255.0).round() as u8);
+        rms.push((r.min(1.0) * 255.0).round() as u8);
+    }
+    let w = Waveform { duration_ms, points, peak, rms };
+    let _ = std::fs::create_dir_all(cache_dir);
+    let _ = std::fs::write(&cache, serde_json::to_vec(&w)?);
+    Ok(w)
+}

@@ -5,6 +5,7 @@
 
 pub mod dynamics;
 pub mod filters;
+pub mod leveler;
 pub mod limiter;
 pub mod params;
 

@@ -30,6 +30,8 @@ pub fn routes() -> Router<St> {
         .route("/tracks/bulk", post(bulk))
         .route("/tracks/{id}/delete", post(track_delete))
         .route("/tracks/{id}/plays", get(track_plays))
+        .route("/tracks/{id}/waveform", get(track_waveform))
+        .route("/tracks/{id}/audio", get(track_audio))
         .route("/tracks/{id}/cover/custom", post(cover_set).delete(cover_clear).layer(DefaultBodyLimit::max(20 * 1024 * 1024)))
         // číselníky
         .route("/catalog/categories", get(cat_list).post(cat_create))
@@ -55,8 +57,17 @@ pub fn routes() -> Router<St> {
         .route("/spots/presets", get(preset_list).post(preset_save))
         .route("/spots/presets/{id}", delete(preset_delete))
         .route("/spots/reports/{name}", get(spot_report))
+        .route("/spots/clients", get(client_list).post(client_save))
+        .route("/spots/clients/{id}", delete(client_delete))
+        .route("/spots/spot-meta", get(spot_meta_list))
+        .route("/spots/spot-meta/{id}", get(spot_meta_get).put(spot_meta_put))
+        .route("/spots/spot-meta/{id}/image", post(spot_image_upload).get(spot_image_get).delete(spot_image_delete).layer(DefaultBodyLimit::max(20 * 1024 * 1024)))
+        .route("/spots/availability", get(spot_availability))
+        .route("/spots/proof", get(spot_proof))
         // stitcher
         .route("/queue/stitch", post(queue_stitch))
+        .route("/queue/bed", post(queue_bed))
+        .route("/bed/stop", post(bed_stop))
         .route("/stitcher/preview", get(stitch_preview))
         // studio – nahrávání
         .route("/record/devices", get(rec_devices))
@@ -200,6 +211,41 @@ async fn track_plays(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
 }
 
 /// Vlastní obal: tělo požadavku = obrázek (Content-Type image/jpeg|png|webp) nebo multipart pole "file".
+#[derive(Deserialize)]
+struct WaveQ { points: Option<usize> }
+/// Průběh signálu (špičky + RMS) pro editor cue bodů.
+async fn track_waveform(State(o): State<St>, Path(id): Path<i64>, Query(q): Query<WaveQ>) -> ApiResult {
+    let t = o.db.get_track(id)?.ok_or_else(|| not_found("skladba"))?;
+    let path = PathBuf::from(orca_core::general::map_path(&o.cfg.read(), &t.path));
+    let key = format!("{id}-{}", std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0));
+    let cache = o.data_dir.join("Cache").join("waveforms");
+    let w = blocking(move || orca_core::analysis::waveform(&path, &cache, &key, q.points.unwrap_or(1600))).await?;
+    Ok(Json(w).into_response())
+}
+
+/// Zvuk skladby pro poslech v editoru (podpora Range); formáty, které prohlížeč neumí, se převedou na MP3.
+async fn track_audio(State(o): State<St>, Path(id): Path<i64>, req: axum::extract::Request) -> ApiResult {
+    use tower::ServiceExt;
+    let t = o.db.get_track(id)?.ok_or_else(|| not_found("skladba"))?;
+    let path = PathBuf::from(orca_core::general::map_path(&o.cfg.read(), &t.path));
+    if !path.is_file() { return Err(not_found("soubor")); }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let serve = if ["mp3", "m4a", "aac", "mp4", "wav", "flac"].contains(&ext.as_str()) { path } else {
+        let cache = o.data_dir.join("Cache").join("audio");
+        std::fs::create_dir_all(&cache)?;
+        let out = cache.join(format!("{id}.mp3"));
+        if !out.is_file() {
+            let ff = orca_core::encoder::resolve_ffmpeg(&o.cfg.read());
+            let (src, dst) = (path.clone(), out.clone());
+            let ok = tokio::task::spawn_blocking(move || std::process::Command::new(ff).args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src).args(["-c:a", "libmp3lame", "-b:a", "192k"]).arg(&dst).status().map(|s| s.success()).unwrap_or(false)).await.unwrap_or(false);
+            if !ok { return Err(bad("soubor nelze převést pro poslech")); }
+        }
+        out
+    };
+    let res = tower_http::services::ServeFile::new(serve).oneshot(req).await.map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(res.into_response())
+}
+
 async fn cover_set(State(o): State<St>, Path(id): Path<i64>, headers: HeaderMap, body: Bytes) -> ApiResult {
     o.db.get_track(id)?.ok_or_else(|| not_found("skladba"))?;
     let ct = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("image/jpeg").to_string();
@@ -209,7 +255,9 @@ async fn cover_set(State(o): State<St>, Path(id): Path<i64>, headers: HeaderMap,
         extract_first_part(&body, &boundary).ok_or_else(|| bad("v požadavku není obrázek"))?
     } else { body.to_vec() };
     if data.is_empty() { return Err(bad("prázdný obrázek")); }
-    let mime = if data.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" } else if data.len() > 12 && &data[8..12] == b"WEBP" { "image/webp" } else { "image/jpeg" };
+    let ff = orca_core::encoder::resolve_ffmpeg(&o.cfg.read());
+    let (data, ext) = orca_core::slides::normalize_upload(&data, &ff).map_err(|e| bad(&e.to_string()))?;
+    let mime = if ext == "png" { "image/png" } else { "image/jpeg" };
     o.library.set_custom_cover(id, &data, mime)?;
     ok()
 }
@@ -426,10 +474,106 @@ async fn spot_report(State(o): State<St>, Path(name): Path<String>, Query(q): Qu
 }
 
 // ---------------------------------------------------------------------------------------------
+// Reklama – klienti, obrázek a text spotu pro DAB+, obsazenost bloků, protokol o odvysílání
+
+
+async fn client_list(State(o): State<St>) -> ApiResult {
+    let now = now_local_str(&o);
+    let v = blocking(move || orca_core::ads::list_clients(&o.db, &now)).await?;
+    Ok(Json(v).into_response())
+}
+async fn client_save(State(o): State<St>, Json(c): Json<orca_core::ads::Client>) -> ApiResult {
+    let id = blocking(move || orca_core::ads::save_client(&o.db, &c)).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.1))?;
+    Ok(Json(json!({"ok": true, "id": id})).into_response())
+}
+async fn client_delete(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
+    blocking(move || orca_core::ads::delete_client(&o.db, id)).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.1))?;
+    ok()
+}
+async fn spot_meta_list(State(o): State<St>) -> ApiResult { Ok(Json(orca_core::ads::spot_metas(&o.db)?).into_response()) }
+async fn spot_meta_get(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
+    Ok(Json(orca_core::ads::spot_meta(&o.db, id)?.unwrap_or(orca_core::ads::SpotMeta { track_id: id, ..Default::default() })).into_response())
+}
+async fn spot_meta_put(State(o): State<St>, Path(id): Path<i64>, Json(mut m): Json<orca_core::ads::SpotMeta>) -> ApiResult {
+    m.track_id = id;
+    if let Some(cur) = orca_core::ads::spot_meta(&o.db, id)? { if m.image_path.is_empty() { m.image_path = cur.image_path; } }
+    orca_core::ads::save_spot_meta(&o.db, &m)?;
+    o.meta.refresh();
+    ok()
+}
+async fn spot_image_upload(State(o): State<St>, Path(id): Path<i64>, body: Bytes) -> ApiResult {
+    let dir = o.data_dir.clone();
+    let o2 = o.clone();
+    blocking(move || {
+        let ff = orca_core::encoder::resolve_ffmpeg(&o2.cfg.read());
+        let p = orca_core::ads::store_spot_image(&dir, id, &body, &ff)?;
+        let mut m = orca_core::ads::spot_meta(&o2.db, id)?.unwrap_or(orca_core::ads::SpotMeta { track_id: id, ..Default::default() });
+        m.image_path = p;
+        orca_core::ads::save_spot_meta(&o2.db, &m)
+    }).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.1))?;
+    o.meta.refresh();
+    ok()
+}
+async fn spot_image_get(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
+    let m = orca_core::ads::spot_meta(&o.db, id)?.filter(|m| !m.image_path.is_empty()).ok_or_else(|| not_found("obrázek"))?;
+    let b = std::fs::read(&m.image_path).map_err(|_| not_found("obrázek"))?;
+    let ct = if m.image_path.ends_with(".png") { "image/png" } else { "image/jpeg" };
+    Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "no-cache")], b).into_response())
+}
+async fn spot_image_delete(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
+    if let Some(mut m) = orca_core::ads::spot_meta(&o.db, id)? {
+        let _ = std::fs::remove_file(&m.image_path);
+        m.image_path.clear();
+        orca_core::ads::save_spot_meta(&o.db, &m)?;
+        o.meta.refresh();
+    }
+    ok()
+}
+#[derive(Deserialize)]
+struct AvailQ { from: Option<String>, days: Option<u32> }
+async fn spot_availability(State(o): State<St>, Query(q): Query<AvailQ>) -> ApiResult {
+    let from = parse_date(&o, q.from.as_deref())?;
+    let cfg = o.cfg.read().clone();
+    let v = blocking(move || orca_core::ads::availability(&o.db, &cfg, from, q.days.unwrap_or(7))).await?;
+    Ok(Json(v).into_response())
+}
+#[derive(Deserialize)]
+struct ProofQ { client_id: Option<i64>, campaign_id: Option<i64>, from: String, to: String, #[serde(default)] format: Option<String> }
+async fn spot_proof(State(o): State<St>, Query(q): Query<ProofQ>) -> ApiResult {
+    let cfg = o.cfg.read().clone();
+    if q.format.as_deref() == Some("json") {
+        let v = blocking(move || orca_core::ads::plays_for(&o.db, q.client_id, q.campaign_id, &q.from, &q.to)).await?;
+        return Ok(Json(v).into_response());
+    }
+    let h = blocking(move || orca_core::ads::proof_html(&o.db, &cfg, q.client_id, q.campaign_id, &q.from, &q.to)).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.1))?;
+    Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8")], h).into_response())
+}
+
+// ---------------------------------------------------------------------------------------------
 // Stitcher
 
 #[derive(Deserialize)]
 struct StitchBody { r#type: String, position: Option<usize> }
+#[derive(Deserialize)]
+struct BedBody { action: String, #[serde(default)] track_id: Option<i64>, #[serde(default)] position: Option<usize> }
+/// Podkres do decků: ON (soubor z knihovny Podkresy) nebo OFF.
+async fn queue_bed(State(o): State<St>, Json(b): Json<BedBody>) -> ApiResult {
+    let item = if b.action == "off" {
+        orca_core::model::QueueItem::bed_off("manual", "podkres OFF – přidáno ručně")
+    } else {
+        let t = o.db.get_track(b.track_id.ok_or_else(|| bad("vyberte podkres"))?)?.ok_or_else(|| crate::not_found("podkres"))?;
+        orca_core::model::QueueItem::bed_on(t, "manual", "podkres ON – přidáno ručně")
+    };
+    let id = item.id.clone();
+    o.engine.queue_push(item, b.position);
+    Ok(Json(json!({"ok": true, "id": id})).into_response())
+}
+/// Okamžitě ukončit podkres (OFF hned na začátek decků a přechod na něj).
+async fn bed_stop(State(o): State<St>) -> ApiResult {
+    o.engine.bed_stop_now();
+    crate::ok()
+}
+
 async fn queue_stitch(State(o): State<St>, Json(b): Json<StitchBody>) -> ApiResult {
     let cfg = o.cfg.read().clone();
     let upcoming = o.engine.queue_snapshot();

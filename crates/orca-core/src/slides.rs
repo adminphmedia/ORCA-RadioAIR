@@ -134,6 +134,37 @@ fn paste(dst: &mut RgbImage, src: &RgbImage, x: u32, y: u32) { imageops::overlay
 pub fn load_image(bytes: &[u8]) -> Option<DynamicImage> { image::load_from_memory(bytes).ok() }
 pub fn load_path(p: &str) -> Option<DynamicImage> { if p.is_empty() { None } else { std::fs::read(p).ok().and_then(|b| load_image(&b)) } }
 
+/// Převod libovolného nahraného obrázku (JPEG, PNG, WebP, GIF, BMP, TIFF; HEIC/AVIF přes ffmpeg)
+/// na uložitelný soubor: zmenší na max. 2000 px, s průhledností PNG, jinak JPEG. Vrací (data, přípona).
+pub fn normalize_upload(bytes: &[u8], ffmpeg: &std::path::Path) -> Result<(Vec<u8>, &'static str)> {
+    if bytes.is_empty() { anyhow::bail!("prázdný soubor"); }
+    let img = match image::load_from_memory(bytes) {
+        Ok(i) => i,
+        Err(_) => {
+            // např. HEIC z iPhonu / Macu – převod přes ffmpeg
+            let dir = std::env::temp_dir().join(format!("orca-img-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir)?;
+            let (inp, out) = (dir.join("in.bin"), dir.join("out.png"));
+            std::fs::write(&inp, bytes)?;
+            let ok = std::process::Command::new(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&inp).args(["-frames:v", "1"]).arg(&out)
+                .stdin(std::process::Stdio::null()).output().map(|o| o.status.success()).unwrap_or(false);
+            let r = if ok { std::fs::read(&out).ok().and_then(|b| image::load_from_memory(&b).ok()) } else { None };
+            let _ = std::fs::remove_dir_all(&dir);
+            r.ok_or_else(|| anyhow::anyhow!("soubor není podporovaný obrázek (JPG, PNG, WebP, GIF, BMP, TIFF, HEIC)"))?
+        }
+    };
+    let img = if img.width() > 2000 || img.height() > 2000 { img.resize(2000, 2000, image::imageops::FilterType::Lanczos3) } else { img };
+    let alpha = img.color().has_alpha();
+    let mut buf = std::io::Cursor::new(vec![]);
+    if alpha {
+        img.write_to(&mut buf, image::ImageFormat::Png)?;
+        Ok((buf.into_inner(), "png"))
+    } else {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90).encode_image(&img.to_rgb8())?;
+        Ok((buf.into_inner(), "jpg"))
+    }
+}
+
 /// Zakódování do JPEG tak, aby se vešlo do limitu velikosti.
 pub fn encode_jpeg(img: &RgbImage, max_kb: u32) -> Result<Vec<u8>> {
     let mut q = 88u8;
@@ -252,6 +283,14 @@ pub fn station(c: &Common, slogan: &str, url: &str) -> RgbImage {
     if !slogan.is_empty() { draw_centered(&mut img, false, h as f32 * 0.075, y, Rgb([235, 240, 250]), slogan); y += h as f32 * 0.2; }
     if !url.is_empty() { draw_centered(&mut img, true, h as f32 * 0.065, y, Rgb([250, 204, 21]), url); }
     img
+}
+
+/// Celoplošný obrázek (reklama): vložený do rozměru slidu bez textů, okraje v barvě stanice.
+pub fn full(c: &Common, src: &DynamicImage) -> RgbImage {
+    let mut canvas = RgbImage::from_pixel(c.w, c.h, mix(c.brand, Rgb([0, 0, 0]), 0.4));
+    let li = contain(src, c.w, c.h);
+    paste(&mut canvas, &li, (c.w - li.width()) / 2, (c.h - li.height()) / 2);
+    canvas
 }
 
 /// Zmenšený obrázek pro EPG (logo, fotka, obrázek pořadu): přesné rozměry, PNG/JPEG.

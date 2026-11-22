@@ -54,6 +54,18 @@ pub struct Campaign {
     pub notes: String,
     pub spots: Vec<CampaignSpot>,
     pub slots: Vec<Slot>,
+    /// Klient z databáze klientů (název se kopíruje do `client`)
+    pub client_id: Option<i64>,
+    /// Obor / konkurence – dva spoty stejného oboru nehrají v jednom bloku
+    pub industry: String,
+    /// Objednaný počet odvysílání (0 = bez limitu); po dosažení kampaň nehraje
+    pub ordered_plays: i64,
+    /// Max. odvysílání za den (0 = bez limitu)
+    pub max_per_day: i64,
+    /// Pozice v bloku: any | first | last (v rámci stejné priority)
+    pub block_position: String,
+    /// Cena za odvysílání (pro přehled klienta)
+    pub price_per_spot: f64,
     #[serde(skip_deserializing)]
     pub plays: i64,
     #[serde(skip_deserializing)]
@@ -66,17 +78,19 @@ impl Default for Campaign {
     fn default() -> Self {
         Self { id: 0, name: String::new(), client: String::new(), category: "Reklama".into(), is_commercial: true, start_at: None, expires_at: None,
             mode: "weekly".into(), system: "order".into(), priority: 4, enabled: true, notes: String::new(), spots: vec![], slots: vec![], plays: 0,
-            created_at: String::new(), updated_at: String::new() }
+            created_at: String::new(), updated_at: String::new(), client_id: None, industry: String::new(), ordered_plays: 0, max_per_day: 0, block_position: "any".into(), price_per_spot: 0.0 }
     }
 }
 
-const CAMP_COLS: &str = "id,name,client,category,is_commercial,start_at,expires_at,mode,system,priority,enabled,notes,created_at,updated_at";
+const CAMP_COLS: &str = "id,name,client,category,is_commercial,start_at,expires_at,mode,system,priority,enabled,notes,created_at,updated_at,client_id,industry,ordered_plays,max_per_day,block_position,price_per_spot";
+const CAMP_N: usize = 20;
 
 fn row_campaign(r: &rusqlite::Row) -> rusqlite::Result<Campaign> {
     Ok(Campaign {
         id: r.get(0)?, name: r.get(1)?, client: r.get(2)?, category: r.get(3)?, is_commercial: r.get::<_, i64>(4)? != 0,
         start_at: r.get(5)?, expires_at: r.get(6)?, mode: r.get(7)?, system: r.get(8)?, priority: r.get(9)?, enabled: r.get::<_, i64>(10)? != 0,
         notes: r.get(11)?, created_at: r.get(12)?, updated_at: r.get(13)?, spots: vec![], slots: vec![], plays: 0,
+        client_id: r.get(14)?, industry: r.get(15)?, ordered_plays: r.get(16)?, max_per_day: r.get(17)?, block_position: r.get(18)?, price_per_spot: r.get(19)?,
     })
 }
 
@@ -127,6 +141,15 @@ pub fn save_campaign(db: &Db, cp: &Campaign) -> Result<Campaign> {
     if cp.name.trim().is_empty() { return Err(anyhow!("kampaň musí mít název")); }
     if !["weekly", "detailed", "playlister"].contains(&cp.mode.as_str()) { return Err(anyhow!("mode: weekly | detailed | playlister")); }
     if !["specific", "order", "random"].contains(&cp.system.as_str()) { return Err(anyhow!("system: specific | order | random")); }
+    let mut cp = cp.clone();
+    if !["any", "first", "last"].contains(&cp.block_position.as_str()) { cp.block_position = "any".into(); }
+    if let Some(cid) = cp.client_id {
+        if let Some(cl) = crate::ads::get_client(db, cid)? {
+            cp.client = cl.name.clone();
+            if cp.industry.is_empty() { cp.industry = cl.industry.clone(); }
+        }
+    }
+    let cp = &cp;
     for s in &cp.slots {
         if !valid_time(&s.time) { return Err(anyhow!("neplatný čas bloku '{}'", s.time)); }
     }
@@ -142,6 +165,8 @@ pub fn save_campaign(db: &Db, cp: &Campaign) -> Result<Campaign> {
                 params![cp.name.trim(), cp.client, cp.category, cp.is_commercial as i64, cp.start_at, cp.expires_at, cp.mode, cp.system, cp.priority, cp.enabled as i64, cp.notes, now])?;
             tx.last_insert_rowid()
         };
+        tx.execute("UPDATE campaigns SET client_id=?2, industry=?3, ordered_plays=?4, max_per_day=?5, block_position=?6, price_per_spot=?7 WHERE id=?1",
+            params![id, cp.client_id, cp.industry.trim(), cp.ordered_plays.max(0), cp.max_per_day.max(0), cp.block_position, cp.price_per_spot.max(0.0)])?;
         tx.execute("DELETE FROM campaign_spots WHERE campaign_id=?1", [id])?;
         for (i, s) in cp.spots.iter().enumerate() {
             tx.execute("INSERT OR IGNORE INTO campaign_spots(campaign_id,track_id,ord) VALUES(?1,?2,?3)", params![id, s.track_id, i as i64])?;
@@ -177,6 +202,12 @@ pub struct BreakItem {
     pub priority_name: String,
     pub optional: bool,
     pub is_commercial: bool,
+    #[serde(default)]
+    pub client: String,
+    #[serde(default)]
+    pub industry: String,
+    #[serde(default)]
+    pub block_position: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,9 +225,28 @@ pub struct BreakBlock {
     pub inserted: bool,
     /// Posun položky s prioritou "ohlášení času" od začátku bloku (ms).
     pub time_offset_ms: i64,
+    /// Upozornění při sestavení (konkurence, vyčerpaná objednávka, denní limit)
+    pub warnings: Vec<String>,
 }
 
-fn spot_len(t: &Track) -> i64 { let (ci, _, co) = t.effective_cues(); (co - ci).max(0) }
+/// Hranice místního dne v UTC (formát jako v play_log).
+pub fn day_bounds_pub(date: NaiveDate) -> (String, String) { day_bounds_utc(date) }
+fn day_bounds_utc(date: NaiveDate) -> (String, String) {
+    use chrono::TimeZone;
+    let f = |d: NaiveDate| chrono::Local.from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap()).earliest()
+        .map(|x| x.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()).unwrap_or_default();
+    (f(date), f(date.succ_opt().unwrap_or(date)))
+}
+
+/// "YYYY-MM-DD HH:MM" (místní čas) → UTC ISO jako v play_log.
+fn local_to_utc(s: &str) -> String {
+    use chrono::TimeZone;
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").ok()
+        .and_then(|n| chrono::Local.from_local_datetime(&n).earliest())
+        .map(|x| x.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()).unwrap_or_default()
+}
+
+pub fn spot_len(t: &Track) -> i64 { let (ci, _, co) = t.effective_cues(); (co - ci).max(0) }
 
 pub fn break_key(date: &str, time: &str) -> String { format!("{date} {time}") }
 
@@ -207,6 +257,7 @@ pub fn build_block(db: &Db, cfg: &Config, date: NaiveDate, def: &BreakDef, commi
     let weekday = date.weekday().number_from_monday() as i64;
     let sp = &cfg.spots;
     let mut items: Vec<BreakItem> = vec![];
+    let mut warnings: Vec<String> = vec![];
     db.with_conn(|c| -> Result<()> {
         // týdenní a detailní programování
         let mut st = c.prepare(&format!(
@@ -215,14 +266,28 @@ pub fn build_block(db: &Db, cfg: &Config, date: NaiveDate, def: &BreakDef, commi
                AND ((c.mode='weekly' AND s.weekday=?2) OR (c.mode='detailed' AND s.date=?3))
                AND (c.start_at IS NULL OR c.start_at <= ?4) AND (c.expires_at IS NULL OR c.expires_at > ?4)",
             CAMP_COLS.replace(',', ",c.")))?;
-        let rows = st.query_map(params![def.time, weekday, date_s, dt], |r| Ok((row_campaign(r)?, r.get::<_, Option<i64>>(14)?)))?
+        let rows = st.query_map(params![def.time, weekday, date_s, dt], |r| Ok((row_campaign(r)?, r.get::<_, Option<i64>>(CAMP_N)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut tst = c.prepare(&format!("SELECT {TRACK_COLS} FROM tracks WHERE id=?1 AND enabled=1 AND missing=0"))?;
         let mut seen = std::collections::HashSet::new();
+        let (day_from, day_to) = day_bounds_utc(date);
         for (camp, specific) in rows {
             if !seen.insert((camp.id, specific)) { continue; }
             let mut sst = c.prepare("SELECT track_id FROM campaign_spots WHERE campaign_id=?1 ORDER BY ord, track_id")?;
             let spot_ids: Vec<i64> = sst.query_map([camp.id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            // objednávka a denní limit (podle skutečně odvysílaných)
+            if !spot_ids.is_empty() && (camp.ordered_plays > 0 || camp.max_per_day > 0) {
+                let ids = spot_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+                if camp.ordered_plays > 0 {
+                    let since = camp.start_at.clone().map(|s| local_to_utc(&s)).unwrap_or_else(|| camp.created_at.clone());
+                    let n: i64 = c.query_row(&format!("SELECT COUNT(*) FROM play_log WHERE track_id IN ({ids}) AND started_at >= ?1"), [&since], |r| r.get(0))?;
+                    if n >= camp.ordered_plays { warnings.push(format!("{}: objednávka vyčerpána ({n}/{})", camp.name, camp.ordered_plays)); continue; }
+                }
+                if camp.max_per_day > 0 {
+                    let n: i64 = c.query_row(&format!("SELECT COUNT(*) FROM play_log WHERE track_id IN ({ids}) AND started_at >= ?1 AND started_at < ?2"), params![day_from, day_to], |r| r.get(0))?;
+                    if n >= camp.max_per_day { warnings.push(format!("{}: denní limit {} dosažen", camp.name, camp.max_per_day)); continue; }
+                }
+            }
             let pick = match (specific, camp.system.as_str()) {
                 (Some(t), _) => Some(t),
                 (None, "random") => spot_ids.choose(&mut rand::thread_rng()).copied(),
@@ -240,6 +305,7 @@ pub fn build_block(db: &Db, cfg: &Config, date: NaiveDate, def: &BreakDef, commi
                 track, campaign_id: Some(camp.id), campaign: camp.name.clone(), priority: camp.priority,
                 priority_name: pdef.map(|p| p.name.clone()).unwrap_or_default(),
                 optional: pdef.map(|p| p.special == "optional").unwrap_or(false), is_commercial: camp.is_commercial,
+                client: camp.client.clone(), industry: camp.industry.clone(), block_position: camp.block_position.clone(),
             });
         }
         // playlister (traffic) – plán z TXT
@@ -256,12 +322,20 @@ pub fn build_block(db: &Db, cfg: &Config, date: NaiveDate, def: &BreakDef, commi
             items.push(BreakItem {
                 track, campaign_id: camp.as_ref().map(|c| c.0), campaign: camp.as_ref().map(|c| c.1.clone()).unwrap_or_else(|| "Traffic".into()),
                 priority: pl_prio, priority_name: pl_name.clone(), optional: false, is_commercial: camp.map(|c| c.2 != 0).unwrap_or(true),
+                client: String::new(), industry: String::new(), block_position: "any".into(),
             });
         }
         Ok(())
     })?;
-    // stabilní pořadí: priorita, pak pořadí vložení
-    items.sort_by_key(|i| i.priority);
+    // stabilní pořadí: priorita, v ní pozice (první / kdekoli / poslední), pak pořadí vložení
+    items.sort_by_key(|i| (i.priority, match i.block_position.as_str() { "first" => 0, "last" => 2, _ => 1 }));
+    // konkurence: dva spoty stejného oboru v jednom bloku nehrají (ponechá se první podle pořadí)
+    let mut seen_ind: std::collections::HashSet<String> = Default::default();
+    items.retain(|i| {
+        let ind = i.industry.trim().to_lowercase();
+        if ind.is_empty() || !i.is_commercial { return true; }
+        if seen_ind.insert(ind) { true } else { warnings.push(format!("{}: konkurence ({}) – v tomto bloku už je, vynecháno", i.campaign, i.industry)); false }
+    });
     // "optional" priority hrají jen tehdy, když v bloku je obchodní reklama
     let has_commercial = items.iter().any(|i| i.is_commercial && !i.optional);
     if !has_commercial { items.retain(|i| !i.optional); }
@@ -278,7 +352,7 @@ pub fn build_block(db: &Db, cfg: &Config, date: NaiveDate, def: &BreakDef, commi
         date: date_s, time: def.time.clone(), name: def.name.clone(), position: def.position.clone(),
         start_immediately: def.start_immediately.get(wd).copied().unwrap_or(false),
         exceeds: def.max_duration_s > 0 && duration_ms > def.max_duration_s as i64 * 1000,
-        max_duration_s: def.max_duration_s, items, duration_ms, commercial_ms, inserted, time_offset_ms,
+        max_duration_s: def.max_duration_s, items, duration_ms, commercial_ms, inserted, time_offset_ms, warnings,
     })
 }
 
@@ -542,5 +616,36 @@ mod tests {
         assert_eq!(b.items.len(), 1);
         assert_eq!(b.items[0].priority, 5);
         assert!(export_breaks_playlist(&db, &cfg, date).unwrap().contains("09:00,MCD01"));
+    }
+
+    #[test]
+    fn competitors_position_and_limits() {
+        let db = Db::open_in_memory().unwrap();
+        let cfg = Config::default();
+        let (a, b, c) = (spot(&db, "auto1", 30_000), spot(&db, "auto2", 30_000), spot(&db, "pekarna", 20_000));
+        let date = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let wk = |t: &str| Slot { weekday: Some(1), date: None, time: t.into(), spot_track_id: None };
+        let cl = crate::ads::save_client(&db, &crate::ads::Client { name: "Autoservis".into(), industry: "auto".into(), enabled: true, ..Default::default() }).unwrap();
+        save_campaign(&db, &Campaign { name: "A".into(), client_id: Some(cl), spots: vec![CampaignSpot { track_id: a, ..Default::default() }], slots: vec![wk("10:00")], ..Default::default() }).unwrap();
+        save_campaign(&db, &Campaign { name: "B".into(), industry: "Auto".into(), spots: vec![CampaignSpot { track_id: b, ..Default::default() }], slots: vec![wk("10:00")], ..Default::default() }).unwrap();
+        save_campaign(&db, &Campaign { name: "C".into(), block_position: "first".into(), spots: vec![CampaignSpot { track_id: c, ..Default::default() }], slots: vec![wk("10:00")], ..Default::default() }).unwrap();
+        let camp_a = list_campaigns(&db, None, "").unwrap().into_iter().find(|x| x.name == "A").unwrap();
+        assert_eq!(camp_a.client, "Autoservis");
+        assert_eq!(camp_a.industry, "auto", "obor převzatý od klienta");
+        let blk = build_block(&db, &cfg, date, &BreakDef { time: "10:00".into(), ..Default::default() }, false).unwrap();
+        let names: Vec<_> = blk.items.iter().map(|i| i.campaign.clone()).collect();
+        assert_eq!(names, vec!["C", "A"], "C je první, B (konkurence) vynechána: {names:?}");
+        assert_eq!(blk.warnings.len(), 1);
+        // objednávka vyčerpána
+        let mut ca = camp_a.clone(); ca.ordered_plays = 1; save_campaign(&db, &ca).unwrap();
+        db.log_start(&db.get_track(a).unwrap().unwrap(), "break", "test").unwrap();
+        let blk = build_block(&db, &cfg, date, &BreakDef { time: "10:00".into(), ..Default::default() }, false).unwrap();
+        let names: Vec<_> = blk.items.iter().map(|i| i.campaign.clone()).collect();
+        assert_eq!(names, vec!["C", "B"], "A vyčerpaná → B (stejný obor) může hrát: {names:?}");
+        // klienta s kampaní nelze smazat; protokol obsahuje odvysílání
+        assert!(crate::ads::delete_client(&db, cl).is_err());
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let html = crate::ads::proof_html(&db, &cfg, Some(cl), None, &today, &today).unwrap();
+        assert!(html.contains("Protokol o odvysílání") && html.contains("auto1"), "protokol");
     }
 }

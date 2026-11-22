@@ -12,10 +12,12 @@ pub enum TrackKind {
     Asset,
     /// Instant jingly (palety) – samostatná knihovna, na pad lze ale dát jakýkoli soubor.
     Instant,
+    /// Hudební podkres – hraje pod položkami playlistu od značky ON do značky OFF.
+    Bed,
 }
 
 impl TrackKind {
-    pub const ALL: [TrackKind; 7] = [TrackKind::Song, TrackKind::Jingle, TrackKind::Spot, TrackKind::Sweeper, TrackKind::VoiceTrack, TrackKind::Asset, TrackKind::Instant];
+    pub const ALL: [TrackKind; 8] = [TrackKind::Song, TrackKind::Jingle, TrackKind::Spot, TrackKind::Sweeper, TrackKind::VoiceTrack, TrackKind::Asset, TrackKind::Instant, TrackKind::Bed];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -26,6 +28,7 @@ impl TrackKind {
             TrackKind::VoiceTrack => "voicetrack",
             TrackKind::Asset => "asset",
             TrackKind::Instant => "instant",
+            TrackKind::Bed => "bed",
         }
     }
 
@@ -38,6 +41,7 @@ impl TrackKind {
             "voicetrack" => TrackKind::VoiceTrack,
             "asset" => TrackKind::Asset,
             "instant" => TrackKind::Instant,
+            "bed" => TrackKind::Bed,
             _ => return None,
         })
     }
@@ -55,6 +59,7 @@ impl TrackKind {
             TrackKind::VoiceTrack => "Voice Tracks",
             TrackKind::Asset => "Assets",
             TrackKind::Instant => "Instant Jingles",
+            TrackKind::Bed => "Beds",
         }
     }
 
@@ -68,6 +73,7 @@ impl TrackKind {
             TrackKind::VoiceTrack => "V",
             TrackKind::Asset => "A",
             TrackKind::Instant => "I",
+            TrackKind::Bed => "B",
         }
     }
 }
@@ -120,7 +126,26 @@ pub struct Track {
     pub updated_at: String,
     pub last_played_at: Option<String>,
     pub play_count: i64,
+    /// Podkres: jak dlouho hraje sám, než začne první položka (ms)
+    #[serde(default = "d_bed_intro")]
+    pub bed_intro_ms: i64,
+    /// Podkres: jak dlouho dohrává po poslední položce před značkou OFF (ms)
+    #[serde(default = "d_bed_outro")]
+    pub bed_outro_ms: i64,
+    /// Podkres: hlasitost pod položkami (dB vůči normalizované úrovni)
+    #[serde(default = "d_bed_level")]
+    pub bed_level_db: f64,
+    /// Podkres: délka náběhu a doznění (ms)
+    #[serde(default = "d_bed_fade")]
+    pub bed_fade_ms: i64,
+    /// Outro: začátek instrumentálního konce (ms od začátku souboru, 0 = nenastaveno)
+    #[serde(default)]
+    pub outro_ms: i64,
 }
+fn d_bed_intro() -> i64 { 3000 }
+fn d_bed_outro() -> i64 { 3000 }
+fn d_bed_level() -> f64 { -10.0 }
+fn d_bed_fade() -> i64 { 1500 }
 
 impl Track {
     pub fn kind(&self) -> TrackKind { self.kind.unwrap_or(TrackKind::Song) }
@@ -171,6 +196,15 @@ pub struct QueueItem {
     /// Rebroadcast: id zdroje (stream / vstup zvukové karty)
     #[serde(default)]
     pub relay: Option<String>,
+    /// Hudební podkres: "on" (začátek, track = soubor podkresu) | "off" (konec)
+    #[serde(default)]
+    pub bed: Option<String>,
+    /// Živý vstup: přehrávání se zastaví a čeká na moderátora (Pokračovat, klávesa, šavle na pultu – GPI)
+    #[serde(default)]
+    pub live: bool,
+    /// Živý vstup: po plánované délce pokračovat automaticky (jinak čekat neomezeně)
+    #[serde(default)]
+    pub live_auto: bool,
 }
 
 impl QueueItem {
@@ -179,8 +213,45 @@ impl QueueItem {
         self.track.kind().is_overlay_capable() && self.position.as_deref().map(|p| p != "independent").unwrap_or(false)
     }
 
+    /// Doba, o kterou položka posune vysílání (pro odhad časů).
+    pub fn slot_ms(&self) -> i64 {
+        if self.live { return self.track.duration_ms.max(0); }
+        match self.bed.as_deref() {
+            Some("off") => 3000,
+            Some(_) => self.track.bed_intro_ms.max(0),
+            None if self.track.kind() == TrackKind::Bed => self.track.bed_intro_ms.max(0),
+            None => { let (ci, mix, _) = self.track.effective_cues(); (mix - ci).max(0) }
+        }
+    }
+
+    /// Živý vstup (moderátor, telefon, host) – playlist se přeruší a pokračuje na pokyn.
+    pub fn live_break(label: &str, planned_ms: i64, auto_continue: bool, source: &str, reason: impl Into<String>) -> Self {
+        let dur = planned_ms.max(0);
+        let t = Track { kind: Some(TrackKind::Asset), title: if label.trim().is_empty() { "ŽIVÝ VSTUP".into() } else { label.trim().to_string() }, filename: "live".into(),
+            duration_ms: dur, cue_out_ms: dur, mix_ms: dur, enabled: true, analyzed: true, ..Default::default() };
+        let mut q = Self::new(t, source, reason);
+        q.live = true;
+        q.live_auto = auto_continue && dur > 0;
+        q
+    }
+
+    /// Značka začátku podkresu (soubor z knihovny Podkresy).
+    pub fn bed_on(track: Track, source: &str, reason: impl Into<String>) -> Self {
+        let mut q = Self::new(track, source, reason);
+        q.bed = Some("on".into());
+        q
+    }
+
+    /// Značka konce podkresu (doznění podle nastavení právě hrajícího podkresu).
+    pub fn bed_off(source: &str, reason: impl Into<String>) -> Self {
+        let t = Track { kind: Some(TrackKind::Bed), title: "Podkres – konec (OFF)".into(), filename: "bed-off".into(), enabled: true, analyzed: true, ..Default::default() };
+        let mut q = Self::new(t, source, reason);
+        q.bed = Some("off".into());
+        q
+    }
+
     pub fn new(track: Track, source: &str, reason: impl Into<String>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None }
+        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None, bed: None, live: false, live_auto: false }
     }
 }
 

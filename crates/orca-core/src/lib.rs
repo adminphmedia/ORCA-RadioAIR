@@ -1,5 +1,6 @@
 //! ORCA RadioAIR – jádro odbavovacího systému pro rádio.
 
+pub mod ads;
 pub mod analysis;
 pub mod audio_out;
 pub mod automation;
@@ -15,6 +16,7 @@ pub mod events;
 pub mod library;
 pub mod meta;
 pub mod general;
+pub mod gpio;
 pub mod model;
 pub mod monitor;
 pub mod nowplaying;
@@ -67,6 +69,7 @@ pub struct Orca {
     pub general: Arc<general::General>,
     pub users: users::Users,
     pub monitor: monitor::Monitor,
+    pub gpio: Arc<gpio::Gpio>,
 }
 
 impl Orca {
@@ -89,6 +92,7 @@ impl Orca {
             }));
         }
         if let Err(e) = catalog::ensure_default_palette(&db) { log::warn!("palety: {e}"); }
+        match ads::migrate_text_clients(&db) { Ok(n) if n > 0 => log::info!("reklama: převedeno {n} klientů do databáze klientů"), Err(e) => log::warn!("klienti: {e}"), _ => {} }
         let encoders = encoder::EncoderManager::new(engine.clone(), cfg.clone(), events.clone());
         let automation = automation::Automation::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), events.clone(), data_dir.to_path_buf());
         let processing = processing::Processing::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf());
@@ -96,13 +100,15 @@ impl Orca {
         if let Err(e) = library.start_watching() { events.alert("error", "watch_failed", e.to_string()); }
         let general = general::General::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf(), automation.clone());
         if cfg.read().general.keep_awake { general::keep_awake(); }
+        let gpio = gpio::Gpio::start(cfg.clone(), engine.clone(), automation.clone());
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default() }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio }))
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).
     pub fn apply_config(&self, mut new: Config) -> Result<()> {
+        new.normalize();
         library::ensure_kind_folders(&mut new, &self.data_dir);
         let old = self.cfg.read().clone();
         new.save(&self.config_path)?;
@@ -119,6 +125,7 @@ impl Orca {
         if serde_json::to_string(&old.autocue)? != serde_json::to_string(&new.autocue)? {
             log::info!("změna autocue – nové prahy platí pro nově analyzované soubory");
         }
+        if serde_json::to_string(&old.gpio.inputs)? != serde_json::to_string(&new.gpio.inputs)? { self.gpio.restart(); }
         if serde_json::to_string(&old.meta)? != serde_json::to_string(&new.meta)? || serde_json::to_string(&old.relay)? != serde_json::to_string(&new.relay)? { self.meta.refresh(); }
         self.events.emit(events::Event::ConfigChanged);
         Ok(())

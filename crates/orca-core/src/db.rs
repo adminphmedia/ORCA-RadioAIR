@@ -224,6 +224,33 @@ const MIGRATIONS: &[&str] = &[
     r#"
     CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL, pin_hash TEXT NOT NULL DEFAULT '', perms TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, last_login TEXT);
     "#,
+    // v6: hudební podkresy (intro, outro, hlasitost, náběh/doznění)
+    r#"
+    ALTER TABLE tracks ADD COLUMN bed_intro_ms INTEGER NOT NULL DEFAULT 3000;
+    ALTER TABLE tracks ADD COLUMN bed_outro_ms INTEGER NOT NULL DEFAULT 3000;
+    ALTER TABLE tracks ADD COLUMN bed_level_db REAL NOT NULL DEFAULT -10;
+    ALTER TABLE tracks ADD COLUMN bed_fade_ms INTEGER NOT NULL DEFAULT 1500;
+    "#,
+    // v7: reklama – klienti, rozšíření kampaní, obrázek a text spotu pro DAB+
+    r#"
+    CREATE TABLE clients(
+        id INTEGER PRIMARY KEY, name TEXT NOT NULL, company TEXT NOT NULL DEFAULT '', ico TEXT NOT NULL DEFAULT '', dic TEXT NOT NULL DEFAULT '',
+        contact TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '',
+        industry TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    ALTER TABLE campaigns ADD COLUMN client_id INTEGER;
+    ALTER TABLE campaigns ADD COLUMN industry TEXT NOT NULL DEFAULT '';
+    ALTER TABLE campaigns ADD COLUMN ordered_plays INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE campaigns ADD COLUMN max_per_day INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE campaigns ADD COLUMN block_position TEXT NOT NULL DEFAULT 'any';
+    ALTER TABLE campaigns ADD COLUMN price_per_spot REAL NOT NULL DEFAULT 0;
+    CREATE TABLE spot_meta(track_id INTEGER PRIMARY KEY, image_path TEXT NOT NULL DEFAULT '', dls_text TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '');
+    "#,
+    // v8: outro (začátek instrumentálního konce – moderátor může mluvit)
+    r#"
+    ALTER TABLE tracks ADD COLUMN outro_ms INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub struct Db {
@@ -304,6 +331,11 @@ pub struct TrackPatch {
     #[serde(default, deserialize_with = "double_option")]
     pub separation_min: Option<Option<i64>>,
     pub bookmarked: Option<bool>,
+    pub bed_intro_ms: Option<i64>,
+    pub bed_outro_ms: Option<i64>,
+    pub bed_level_db: Option<f64>,
+    pub bed_fade_ms: Option<i64>,
+    pub outro_ms: Option<i64>,
 }
 
 /// Rozliší chybějící pole (None) od explicitního null (Some(None)).
@@ -315,7 +347,7 @@ where D: serde::Deserializer<'de>, T: Deserialize<'de> {
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryCount { pub kind: String, pub category: String, pub count: i64 }
 
-pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked";
+pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked,bed_intro_ms,bed_outro_ms,bed_level_db,bed_fade_ms,outro_ms";
 
 pub fn row_track(r: &Row) -> rusqlite::Result<Track> {
     let kind: String = r.get(1)?;
@@ -360,6 +392,11 @@ pub fn row_track(r: &Row) -> rusqlite::Result<Track> {
         separation_min: r.get(37)?,
         cover_path: r.get(38)?,
         bookmarked: r.get::<_, i64>(39)? != 0,
+        bed_intro_ms: r.get(40)?,
+        bed_outro_ms: r.get(41)?,
+        bed_level_db: r.get(42)?,
+        bed_fade_ms: r.get(43)?,
+        outro_ms: r.get(44)?,
     })
 }
 
@@ -605,6 +642,7 @@ impl Db {
         set!(playlister_code, "playlister_code"); set!(isrc, "isrc"); set!(composer, "composer"); set!(publisher, "publisher");
         set!(cue_in_ms, "cue_in_ms"); set!(intro_ms, "intro_ms"); set!(mix_ms, "mix_ms"); set!(cue_out_ms, "cue_out_ms");
         set!(vocal, "vocal"); set!(properties, "properties"); set!(color, "color"); set!(comment, "comment");
+        set!(bed_intro_ms, "bed_intro_ms"); set!(bed_outro_ms, "bed_outro_ms"); set!(bed_level_db, "bed_level_db"); set!(bed_fade_ms, "bed_fade_ms"); set!(outro_ms, "outro_ms");
         if let Some(sep) = &p.separation_min { tx.execute("UPDATE tracks SET separation_min=?2 WHERE id=?1", params![id, sep])?; }
         if let Some(b) = p.bookmarked { tx.execute("UPDATE tracks SET bookmarked=?2 WHERE id=?1", params![id, b as i64])?; }
         if let Some(e) = p.enabled { tx.execute("UPDATE tracks SET enabled=?2 WHERE id=?1", params![id, e as i64])?; }

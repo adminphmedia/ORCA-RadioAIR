@@ -103,21 +103,20 @@ async fn update_doc<T: sched::Doc + Send + 'static>(State(o): State<St>, Path(id
 async fn delete_doc<T: sched::Doc + Send + 'static>(State(o): State<St>, Path(id): Path<i64>) -> ApiResult { sched::delete::<T>(&o.db, id)?; o.meta.refresh(); ok() }
 async fn show_delete(State(o): State<St>, Path(id): Path<i64>) -> ApiResult { sched::delete_show(&o.db, id)?; o.meta.refresh(); ok() }
 
-fn media_path(o: &St, kind: &str, id: i64, ctype: &str) -> std::path::PathBuf {
-    let ext = if ctype.contains("png") { "png" } else if ctype.contains("webp") { "webp" } else { "jpg" };
+fn media_path(o: &St, kind: &str, id: i64, ext: &str) -> std::path::PathBuf {
     o.data_dir.join("Media").join(kind).join(format!("{id}-{}.{ext}", chrono::Utc::now().timestamp()))
 }
 
-fn check_image(body: &Bytes) -> Result<(), ApiError> {
-    if body.is_empty() { return Err(bad("prázdný soubor")); }
-    if orca_core::slides::load_image(body).is_none() { return Err(bad("soubor není obrázek (JPG/PNG)")); }
-    Ok(())
+/// Převede nahraný obrázek (JPG, PNG, WebP, GIF, BMP, TIFF, HEIC…) na uložitelný JPEG/PNG.
+fn check_image(o: &St, body: &Bytes) -> Result<(Vec<u8>, &'static str), ApiError> {
+    let ff = orca_core::encoder::resolve_ffmpeg(&o.cfg.read());
+    orca_core::slides::normalize_upload(body, &ff).map_err(|e| bad(&e.to_string()))
 }
 
-async fn presenter_photo(State(o): State<St>, Path(id): Path<i64>, headers: HeaderMap, body: Bytes) -> ApiResult {
-    check_image(&body)?;
+async fn presenter_photo(State(o): State<St>, Path(id): Path<i64>, _headers: HeaderMap, body: Bytes) -> ApiResult {
+    let (body, ext) = check_image(&o, &body)?;
     let mut p = sched::get::<Presenter>(&o.db, id)?.ok_or_else(|| not_found("moderátor"))?;
-    let path = media_path(&o, "presenters", id, headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(""));
+    let path = media_path(&o, "presenters", id, ext);
     if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
     std::fs::write(&path, &body)?;
     p.photo_path = path.to_string_lossy().to_string();
@@ -126,10 +125,10 @@ async fn presenter_photo(State(o): State<St>, Path(id): Path<i64>, headers: Head
     Ok(Json(r).into_response())
 }
 
-async fn show_image(State(o): State<St>, Path(id): Path<i64>, headers: HeaderMap, body: Bytes) -> ApiResult {
-    check_image(&body)?;
+async fn show_image(State(o): State<St>, Path(id): Path<i64>, _headers: HeaderMap, body: Bytes) -> ApiResult {
+    let (body, ext) = check_image(&o, &body)?;
     let mut s = sched::get::<Show>(&o.db, id)?.ok_or_else(|| not_found("pořad"))?;
-    let path = media_path(&o, "shows", id, headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(""));
+    let path = media_path(&o, "shows", id, ext);
     if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
     std::fs::write(&path, &body)?;
     s.image_path = path.to_string_lossy().to_string();
@@ -361,9 +360,9 @@ async fn weather_geocode(State(o): State<St>, Query(g): Query<GeoQ>) -> ApiResul
     Ok(Json(blocking(move || orca_core::weather::geocode(&g.q, &lang)).await?).into_response())
 }
 
-async fn logo_upload(State(o): State<St>, headers: HeaderMap, body: Bytes) -> ApiResult {
-    check_image(&body)?;
-    let path = media_path(&o, "station", 0, headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(""));
+async fn logo_upload(State(o): State<St>, _headers: HeaderMap, body: Bytes) -> ApiResult {
+    let (body, ext) = check_image(&o, &body)?;
+    let path = media_path(&o, "station", 0, ext);
     if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
     std::fs::write(&path, &body)?;
     let mut cfg = o.cfg.read().clone();

@@ -49,7 +49,12 @@ pub struct EngineStatus {
     pub current: Option<VoiceStatus>,
     pub voices: Vec<VoiceStatus>,
     pub output: OutputStatus,
+    /// Právě hrající hudební podkres
+    pub bed: Option<VoiceStatus>,
 }
+
+/// Stav podkresu v mixeru (smyčka souboru až do značky OFF).
+struct BedState { voice_id: String, track: Track }
 
 pub enum Cmd {
     Play,
@@ -68,6 +73,8 @@ pub enum Cmd {
     /// Zastavit všechny instant jingly.
     StopInstants,
     ReopenOutput,
+    /// Okamžitě ukončit hudební podkres (náběh doznění)
+    BedOff,
     Shutdown,
 }
 
@@ -91,7 +98,20 @@ pub struct Engine {
     pub proc_applied: AtomicU64,
     /// Bloky pro měření (0 = vstup processingu, 1 = výstup masteru)
     pub meter_tx: RwLock<Option<Sender<(u8, Arc<Vec<f32>>)>>>,
+    /// Právě hrající hudební podkres (soubor z knihovny Podkresy)
+    pub bed_active: RwLock<Option<Track>>,
+    /// Historie úrovní po blocích 10 ms (špička a RMS L/R v dBFS) pro plynulé měřiče
+    meter_hist: Mutex<MeterHist>,
+    /// Vyrovnání hlasitosti: aktuální zisk a krátkodobá hlasitost vstupu (f64 bity)
+    leveler_gain: AtomicU64,
+    leveler_lufs: AtomicU64,
 }
+
+/// Jeden blok měření: [špička L, špička R, RMS L, RMS R] v dBFS (zaokrouhleno na 0,1 dB).
+pub type MeterBlock = [f32; 4];
+pub const METER_HIST_BLOCKS: usize = 12_000; // 2 minuty po 10 ms
+#[derive(Default)]
+struct MeterHist { seq: u64, blocks: VecDeque<MeterBlock>, block_ms: f32 }
 
 /// Nastavení processingu pro mixer.
 pub struct ProcMsg {
@@ -220,6 +240,8 @@ struct Voice {
     overlay: bool,
     kill_after_fade: bool,
     underruns: u32,
+    /// Tichý hlas (značka podkresu ON/OFF – čekání na intro / outro)
+    silent: bool,
 }
 
 impl Voice {
@@ -228,14 +250,22 @@ impl Voice {
         let ms_to_f = |ms: i64| (ms.max(0) as u64 * rate as u64) / 1000;
         let len = ms_to_f(cue_out - cue_in);
         let mix_at = ms_to_f(mix - cue_in).min(len);
-        Voice { item, src, pos: 0, len, mix_at, gain: db_to_lin(gain_db as f32), fade: None, segued: false, overlay, kill_after_fade: false, underruns: 0 }
+        Voice { item, src, pos: 0, len, mix_at, gain: db_to_lin(gain_db as f32), fade: None, segued: false, overlay, kill_after_fade: false, underruns: 0, silent: false }
+    }
+
+    /// Tichý hlas dané délky (značka podkresu).
+    fn silent(item: QueueItem, len_ms: i64, rate: u32) -> Voice {
+        let f = (len_ms.max(0) as u64 * rate as u64) / 1000;
+        let mut v = Voice::new(item, Prefetch::start_segments(vec![], rate), rate, 0.0, false);
+        v.len = f; v.mix_at = f; v.silent = true;
+        v
     }
 
     fn status(&self, rate: u32) -> VoiceStatus {
         let f_to_ms = |f: u64| (f * 1000 / rate as u64) as i64;
         VoiceStatus {
             item: self.item.clone(),
-            channel: if self.overlay { "overlay".into() } else { "main".into() },
+            channel: if self.item.source == "bed" { "bed".into() } else if self.overlay { "overlay".into() } else { "main".into() },
             position_ms: f_to_ms(self.pos),
             length_ms: f_to_ms(self.len),
             remaining_ms: f_to_ms(self.len.saturating_sub(self.pos)),
@@ -246,6 +276,7 @@ impl Voice {
 
     fn is_finished(&self) -> bool {
         if self.pos >= self.len { return true; }
+        if self.silent { return false; }
         if self.kill_after_fade { if let Some(f) = self.fade { if f.finished(self.pos) { return true; } } }
         self.src.done.load(Ordering::Acquire) && self.src.cons.is_empty()
     }
@@ -254,6 +285,7 @@ impl Voice {
     fn render(&mut self, mix: &mut [f32], frames: usize, extra_gain: f32) {
         if !self.src.live.load(Ordering::Relaxed) { self.src.live.store(true, Ordering::Relaxed); }
         let want = frames.min((self.len - self.pos.min(self.len)) as usize);
+        if self.silent { self.pos += want as u64; return; }
         let avail = self.src.buffered_frames().min(want);
         if avail < want && !self.src.done.load(Ordering::Acquire) { self.underruns += 1; }
         if let Ok(chunk) = self.src.cons.read_chunk(avail * 2) {
@@ -298,6 +330,7 @@ impl Engine {
                 talkover: false,
                 current: None,
                 voices: vec![],
+                bed: None,
                 output: OutputStatus { device: String::new(), ok: false, sample_rate: ENGINE_RATE, underruns: 0, message: String::new() },
             }),
             meter_l: AtomicU32::new(0),
@@ -309,7 +342,7 @@ impl Engine {
             rate: AtomicU32::new(ENGINE_RATE),
             resolver: RwLock::new(None),
             stitch_resolver: RwLock::new(None),
-            proc_tx, proc_rx: Mutex::new(Some(proc_rx)), proc_applied: AtomicU64::new(0), meter_tx: RwLock::new(None),
+            proc_tx, proc_rx: Mutex::new(Some(proc_rx)), proc_applied: AtomicU64::new(0), meter_tx: RwLock::new(None), bed_active: RwLock::new(None), meter_hist: Mutex::new(MeterHist::default()), leveler_gain: AtomicU64::new(0f64.to_bits()), leveler_lufs: AtomicU64::new((-70f64).to_bits()),
         });
         let e = engine.clone();
         std::thread::Builder::new().name("orca-mixer".into()).spawn(move || e.mixer_loop(cmd_rx)).expect("mixer thread");
@@ -340,6 +373,19 @@ impl Engine {
     }
 
     /// Úrovně (peak, lineárně 0..1).
+    /// Bloky měření od pořadového čísla `since` (vrací poslední seq, délku bloku v ms, bloky).
+    pub fn meter_blocks(&self, since: u64, max: usize) -> (u64, f32, Vec<MeterBlock>) {
+        let h = self.meter_hist.lock();
+        let avail = h.blocks.len() as u64;
+        let first_seq = h.seq.saturating_sub(avail);
+        let from = since.max(first_seq).max(h.seq.saturating_sub(max as u64));
+        let skip = (from - first_seq) as usize;
+        (h.seq, h.block_ms, h.blocks.iter().skip(skip).copied().collect())
+    }
+
+    /// Vyrovnání hlasitosti: (zisk dB, hlasitost vstupu LUFS)
+    pub fn leveler_state(&self) -> (f64, f64) { (f64::from_bits(self.leveler_gain.load(Ordering::Relaxed)), f64::from_bits(self.leveler_lufs.load(Ordering::Relaxed))) }
+
     pub fn meters(&self) -> (f32, f32) {
         (f32::from_bits(self.meter_l.load(Ordering::Relaxed)), f32::from_bits(self.meter_r.load(Ordering::Relaxed)))
     }
@@ -386,6 +432,27 @@ impl Engine {
     /// Hlas + případný podkres (Stitcher).
     fn make_voice_full(&self, mut item: QueueItem, overlay: bool, preloaded: Option<Prefetch>) -> (Voice, Option<Voice>) {
         let rate = self.sample_rate();
+        if item.bed.is_none() && item.track.kind() == crate::model::TrackKind::Bed && item.track.id > 0 { item.bed = Some("on".into()); }
+        if item.live {
+            // tichý hlas: neomezeně (čeká na Pokračovat), nebo plánovaná délka při automatickém pokračování
+            let len = if item.live_auto { item.track.duration_ms } else { 12 * 3600 * 1000 };
+            return (Voice::silent(item, len, rate), None);
+        }
+        match item.bed.as_deref() {
+            Some("off") => {
+                let outro = self.bed_active.read().as_ref().map(|t| t.bed_outro_ms).unwrap_or(0);
+                return (Voice::silent(item, outro, rate), None);
+            }
+            Some(_) => {
+                let t = item.track.clone();
+                let fade = (t.bed_fade_ms.clamp(0, 20_000) as u64 * rate as u64) / 1000;
+                let bed = self.make_bed_voice(&t, fade);
+                let mut marker = item;
+                marker.track.title = format!("Podkres ON: {}", t.display());
+                return (Voice::silent(marker, t.bed_intro_ms, rate), Some(bed));
+            }
+            None => {}
+        }
         if let Some(kind) = item.stitch.clone() {
             let upcoming = self.queue_snapshot();
             let plan = self.stitch_resolver.read().clone().map(|r| r(&kind, &upcoming));
@@ -439,6 +506,54 @@ impl Engine {
         (Voice::new(item, src, rate, gain_db, overlay), None)
     }
 
+    /// Hlas podkresu: hraje přes ostatní položky ve vlastní hlasitosti, náběh `fade_in` snímků.
+    fn make_bed_voice(&self, t: &Track, fade_in: u64) -> Voice {
+        let rate = self.sample_rate();
+        let (normalize, target) = { let c = self.cfg.read(); (c.audio.normalize, c.audio.target_lufs) };
+        let gain_db = t.playback_gain_db(normalize, target) + t.bed_level_db.clamp(-60.0, 12.0);
+        let (cue_in, _, cue_out) = t.effective_cues();
+        let max_frames = ((cue_out - cue_in).max(0) as u64 * rate as u64) / 1000;
+        let item = QueueItem::new(t.clone(), "bed", "hudební podkres");
+        let mut v = Voice::new(item, Prefetch::start(self.mp(&t.path), cue_in, max_frames, rate), rate, gain_db, true);
+        if fade_in > 0 { v.fade = Some(Fade { from: 0.0, to: 1.0, start: 0, len: fade_in.min(v.len.max(1)) }); }
+        v
+    }
+
+    /// Zařadí právě spuštěnou položku do mixu (a obslouží značky podkresu ON/OFF).
+    fn push_started(&self, voices: &mut Vec<Voice>, v: Voice, extra: Option<Voice>, bed: &mut Option<BedState>) {
+        let rate = self.sample_rate() as u64;
+        let fr = |ms: i64| (ms.max(0) as u64 * rate) / 1000;
+        match v.item.bed.as_deref() {
+            Some("on") => {
+                for b in voices.iter_mut().filter(|x| x.item.source == "bed" && !x.kill_after_fade) {
+                    let len = fr(b.item.track.bed_fade_ms).max(fr(200));
+                    b.fade = Some(Fade { from: b.fade.map(|f| f.gain_at(b.pos)).unwrap_or(1.0), to: 0.0, start: b.pos, len });
+                    b.kill_after_fade = true;
+                }
+                if let Some(bv) = extra {
+                    *bed = Some(BedState { voice_id: bv.item.id.clone(), track: bv.item.track.clone() });
+                    *self.bed_active.write() = Some(bv.item.track.clone());
+                    self.events.emit(Event::TrackStarted { item: bv.item.clone(), channel: "bed".into() });
+                    voices.push(bv);
+                }
+                voices.push(v);
+            }
+            Some("off") => {
+                for b in voices.iter_mut().filter(|x| x.item.source == "bed" && !x.kill_after_fade) {
+                    let t = &b.item.track;
+                    let fade = fr(t.bed_fade_ms).max(fr(200));
+                    let wait = fr(t.bed_outro_ms).saturating_sub(fade);
+                    b.fade = Some(Fade { from: b.fade.map(|f| f.gain_at(b.pos)).unwrap_or(1.0), to: 0.0, start: b.pos + wait, len: fade });
+                    b.kill_after_fade = true;
+                }
+                *bed = None;
+                *self.bed_active.write() = None;
+                voices.push(v);
+            }
+            _ => { voices.push(v); if let Some(b) = extra { voices.push(b); } }
+        }
+    }
+
     /// Kdy (snímek hostitelské skladby) začne sweeper/voice track.
     fn overlay_trigger(host: &Voice, ov: &QueueItem, rate: u32) -> u64 {
         let ms_f = |ms: i64| (ms.max(0) as u64 * rate as u64) / 1000;
@@ -472,6 +587,8 @@ impl Engine {
         let (mut lvl_l, mut lvl_r) = (0f32, 0f32);
         let mut duck = 1.0f32;
         let mut pending: Vec<PendingOverlay> = Vec::new();
+        let mut bed: Option<BedState> = None;
+        let mut leveler = crate::dsp::leveler::Leveler::new(self.sample_rate());
         let mut instants_out: Option<OutputHandle> = None;
         let mut instants_dev = String::new();
         let mut inst_mix = vec![0f32; BLOCK * 2];
@@ -499,7 +616,9 @@ impl Engine {
                     Cmd::Pause => { if state == PlayState::Playing { state = PlayState::Paused; } else if state == PlayState::Paused { state = PlayState::Playing; } }
                     Cmd::Stop => {
                         state = PlayState::Stopped;
-                        for v in voices.iter_mut().filter(|v| !v.overlay) {
+                        bed = None;
+                        *self.bed_active.write() = None;
+                        for v in voices.iter_mut().filter(|v| !v.overlay || v.item.source == "bed") {
                             v.fade = Some(Fade { from: v.fade.map(|f| f.gain_at(v.pos)).unwrap_or(1.0), to: 0.0, start: v.pos, len: stop_fade * rate / 1000 });
                             v.kill_after_fade = true;
                         }
@@ -513,7 +632,7 @@ impl Engine {
                         }
                         stop_after = false;
                         pending.clear();
-                        if let Some((v, bed)) = self.start_next(&mut preloaded) { voices.push(v); if let Some(b) = bed { voices.push(b); } }
+                        if let Some((v, x)) = self.start_next(&mut preloaded) { self.push_started(&mut voices, v, x, &mut bed); }
                     }
                     Cmd::StopAfterCurrent(b) => stop_after = b,
                     Cmd::Loop(b) => loop_current = b,
@@ -539,6 +658,15 @@ impl Engine {
                             v.fade = Some(Fade { from: 1.0, to: 0.0, start: v.pos, len: 200 * rate / 1000 });
                             v.kill_after_fade = true;
                         }
+                    }
+                    Cmd::BedOff => {
+                        for b in voices.iter_mut().filter(|x| x.item.source == "bed" && !x.kill_after_fade) {
+                            let len = (b.item.track.bed_fade_ms.max(200) as u64 * rate) / 1000;
+                            b.fade = Some(Fade { from: b.fade.map(|f| f.gain_at(b.pos)).unwrap_or(1.0), to: 0.0, start: b.pos, len });
+                            b.kill_after_fade = true;
+                        }
+                        bed = None;
+                        *self.bed_active.write() = None;
                     }
                     Cmd::ReopenOutput => { drop(output.take()); output = self.try_open_output(); clock_start = Instant::now(); frames_rendered = 0; }
                     Cmd::Shutdown => return,
@@ -602,7 +730,7 @@ impl Engine {
                             cur.fade = Some(Fade { from: 1.0, to: 0.0, start: cur.mix_at, len: cur.len - cur.mix_at });
                         }
                     }
-                    if let Some((v, bed)) = self.start_next(&mut preloaded) { voices.push(v); if let Some(b) = bed { voices.push(b); } }
+                    if let Some((v, x)) = self.start_next(&mut preloaded) { self.push_started(&mut voices, v, x, &mut bed); }
                 }
             }
 
@@ -648,13 +776,34 @@ impl Engine {
                 if instants_out.as_ref().map(|o| o.failed.load(Ordering::Relaxed)).unwrap_or(false) { instants_out = None; }
             }
 
+            // --- podkres: smyčka souboru s prolnutím, dokud nepřijde značka OFF
+            if state == PlayState::Playing {
+                if let Some(b) = bed.as_mut() {
+                    match voices.iter().position(|v| v.item.id == b.voice_id) {
+                        Some(i) => {
+                            let xf = ((b.track.bed_fade_ms.clamp(300, 5000) as u64 * rate as u64) / 1000).min(voices[i].len / 3).max(BLOCK as u64);
+                            if voices[i].len.saturating_sub(voices[i].pos) <= xf {
+                                let cur = &mut voices[i];
+                                cur.fade = Some(Fade { from: cur.fade.map(|f| f.gain_at(cur.pos)).unwrap_or(1.0), to: 0.0, start: cur.pos, len: xf });
+                                cur.kill_after_fade = true;
+                                let mut nv = self.make_bed_voice(&b.track, xf);
+                                nv.item.reason = "hudební podkres (opakování)".into();
+                                b.voice_id = nv.item.id.clone();
+                                voices.push(nv);
+                            }
+                        }
+                        None => { bed = None; *self.bed_active.write() = None; }
+                    }
+                }
+            }
+
             // --- mix
             mix.iter_mut().for_each(|s| *s = 0.0);
             let duck_target = if talkover || voices.iter().any(|v| v.overlay && v.item.track.kind().is_overlay_capable()) { db_to_lin(self.cfg.read().audio.duck_db) } else { 1.0 };
             duck += (duck_target - duck) * 0.15;
             inst_mix.iter_mut().for_each(|s| *s = 0.0);
             for v in voices.iter_mut() {
-                if state == PlayState::Paused && !v.overlay { continue; }
+                if state == PlayState::Paused && (!v.overlay || v.item.source == "bed") { continue; }
                 let extra = if v.overlay { 1.0 } else { duck };
                 if v.item.source == "instant" && instants_out.is_some() { v.render(&mut inst_mix, BLOCK, 1.0); }
                 else { v.render(&mut mix, BLOCK, extra); }
@@ -681,6 +830,16 @@ impl Engine {
                 out_branch = msg.output_branch;
                 proc_bypass = msg.bypass;
                 pending_ack = Some(msg.generation);
+            }
+            // --- vyrovnání hlasitosti programu (LUFS) – všechny zdroje na cílovou hlasitost
+            {
+                let (lc, target) = { let c = self.cfg.read(); (c.audio.leveler.clone(), c.audio.target_lufs) };
+                if lc.enabled {
+                    let p = crate::dsp::leveler::LevelerParams::for_speed(target, lc.max_boost_db, lc.max_cut_db, &lc.speed);
+                    leveler.process(&mut mix, &p, talkover || state != PlayState::Playing);
+                } else if leveler.gain_db() != 0.0 { leveler.reset_gain(); }
+                self.leveler_gain.store(leveler.gain_db().to_bits(), Ordering::Relaxed);
+                self.leveler_lufs.store(leveler.loudness().to_bits(), Ordering::Relaxed);
             }
             let meter_tx = self.meter_tx.read().clone();
             if let Some(tx) = &meter_tx { let _ = tx.try_send((0, Arc::new(mix.clone()))); }
@@ -724,9 +883,22 @@ impl Engine {
             // bez processingu zůstává původní chování (soft clip i do streamů)
             if !processed { for x in mix.iter_mut() { *x = soft_clip(*x); } }
             let (mut pk_l, mut pk_r) = (0f32, 0f32);
+            let (mut sq_l, mut sq_r) = (0f64, 0f64);
             for fr in out_buf.chunks_exact(2) {
                 pk_l = pk_l.max(fr[0].abs());
                 pk_r = pk_r.max(fr[1].abs());
+                sq_l += (fr[0] as f64) * (fr[0] as f64);
+                sq_r += (fr[1] as f64) * (fr[1] as f64);
+            }
+            {
+                let n = (out_buf.len() / 2).max(1) as f64;
+                let db = |x: f64| { let d = 20.0 * x.max(1e-7).log10(); ((d.max(-120.0) * 10.0).round() / 10.0) as f32 };
+                let blk: MeterBlock = [db(pk_l as f64), db(pk_r as f64), db((sq_l / n).sqrt()), db((sq_r / n).sqrt())];
+                let mut h = self.meter_hist.lock();
+                h.block_ms = BLOCK as f32 * 1000.0 / rate as f32;
+                h.blocks.push_back(blk);
+                if h.blocks.len() > METER_HIST_BLOCKS { h.blocks.pop_front(); }
+                h.seq += 1;
             }
             if pk_l > 1.0 || pk_r > 1.0 { crate::dsp::stats().clip_samples.fetch_add(1, Ordering::Relaxed); }
             lvl_l = pk_l.max(lvl_l * 0.93);
@@ -776,6 +948,7 @@ impl Engine {
                 st.loop_current = loop_current;
                 st.talkover = talkover;
                 st.voices = voices.iter().map(|v| v.status(rate)).collect();
+                st.bed = voices.iter().rev().find(|v| v.item.source == "bed" && !v.kill_after_fade).or_else(|| voices.iter().rev().find(|v| v.item.source == "bed")).map(|v| v.status(rate));
                 st.current = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade).or_else(|| voices.iter().rev().find(|v| !v.overlay)).map(|v| v.status(rate));
                 if let Some(o) = &output { st.output.underruns = o.underruns.load(Ordering::Relaxed); }
             }
@@ -787,7 +960,7 @@ impl Engine {
         let head = self.queue.lock().front().cloned();
         match (&head, preloaded.as_ref()) {
             (Some(h), Some((id, _))) if *id == h.id => {}
-            (Some(h), _) if h.stitch.is_some() || h.is_attached_overlay() => *preloaded = None,
+            (Some(h), _) if h.stitch.is_some() || h.is_attached_overlay() || h.bed.is_some() || h.live || h.track.kind() == crate::model::TrackKind::Bed => *preloaded = None,
             (Some(h), _) if h.relay.is_some() => {
                 let rate = self.sample_rate();
                 let max_frames = (h.track.effective_cues().2.max(0) as u64 * rate as u64) / 1000;
@@ -818,12 +991,23 @@ impl Engine {
         let mut logged = item;
         logged.track.title = v.item.track.title.clone();
         logged.track.duration_ms = v.item.track.duration_ms;
-        self.events.emit(Event::TrackStarted { item: logged, channel: "main".into() });
+        if logged.bed.is_none() && !logged.live && logged.track.kind() != crate::model::TrackKind::Bed {
+            self.events.emit(Event::TrackStarted { item: logged, channel: "main".into() });
+        }
         self.events.emit(Event::QueueChanged);
         Some((v, bed))
     }
 
     // --- operace s frontou (decky)
+
+    /// Ukončit podkres hned (doznění podle nastavení podkresu), přehrávání pokračuje.
+    pub fn bed_stop_now(&self) { let _ = self.cmd_tx.send(Cmd::BedOff); }
+
+    /// Právě běží živý vstup (čeká se na pokračování)?
+    pub fn live_active(&self) -> bool { self.status.read().current.as_ref().map(|c| c.item.live && !c.fading).unwrap_or(false) }
+
+    /// Pokračovat po živém vstupu (jen když živý vstup právě běží). Vrací, zda se pokračovalo.
+    pub fn live_continue(&self) -> bool { if self.live_active() { self.send(Cmd::Next); true } else { false } }
 
     pub fn queue_snapshot(&self) -> Vec<QueueItem> { self.queue.lock().iter().cloned().collect() }
 

@@ -383,7 +383,15 @@ impl MetaHub {
             }
         }
         let ovr = { let mut o = self.override_text.lock(); if o.as_ref().map(|(_, until)| Instant::now() > *until).unwrap_or(false) { *o = None; } o.clone() };
-        let ovr_t = ovr.as_ref().map(|(t, _)| Tagged { text: t.clone(), tags: vec![] });
+        let mut ovr_t = ovr.as_ref().map(|(t, _)| Tagged { text: t.clone(), tags: vec![] });
+        // reklamní spot s vlastním textem pro DAB+/RDS (po dobu spotu)
+        let spot_meta = cur.as_ref().filter(|c| c.track.id > 0).and_then(|c| crate::ads::spot_meta(&self.db, c.track.id).ok().flatten());
+        if ovr_t.is_none() {
+            if let Some(m) = spot_meta.as_ref().filter(|m| !m.dls_text.trim().is_empty()) {
+                let text = render(&m.dls_text, &ctx).text;
+                ovr_t = Some(Tagged { tags: vec![(tag::ADVERTISEMENT, 0, text.chars().count())], text });
+            }
+        }
 
         // ---- DAB DLS
         let dir = dab_dir(&cfg, &self.data_dir);
@@ -414,11 +422,11 @@ impl MetaHub {
 
         // ---- MOT Slideshow
         if dab.enabled && dab.sls_enabled {
-            let sig = format!("{:?}|{:?}|{:?}|{:?}|{}|{}", cur.as_ref().map(|c| (&c.track.id, &c.track.title)), l.show.0.as_ref().map(|s| (s.grid_id, s.start)),
+            let sig = format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}", spot_meta.as_ref().map(|m| (&m.image_path, &m.dls_text)), cur.as_ref().map(|c| (&c.track.id, &c.track.title)), l.show.0.as_ref().map(|s| (s.grid_id, s.start)),
                 weather.as_ref().map(|w| (&w.updated, &w.text)), next.as_ref().map(|t| t.id), cfg.meta.logo_path, serde_json::to_string(&dab.sls_slides).unwrap_or_default());
             if sig != l.slide_sig || force {
                 l.slide_sig = sig;
-                match self.render_slides(&cfg, &ctx, &dir) { Ok(v) => self.state.write().slides = v, Err(e) => log::warn!("slideshow: {e}") }
+                match self.render_slides(&cfg, &ctx, &dir, spot_meta.as_ref()) { Ok(v) => self.state.write().slides = v, Err(e) => log::warn!("slideshow: {e}") }
             }
             let slides = self.state.read().slides.clone();
             if !slides.is_empty() && (changed || l.slide_at.map(|t| t.elapsed() >= Duration::from_secs(dab.sls_interval_s.max(5) as u64)).unwrap_or(true)) {
@@ -519,7 +527,7 @@ impl MetaHub {
         })
     }
 
-    fn render_slides(&self, cfg: &Config, ctx: &Ctx, dir: &Path) -> anyhow::Result<Vec<SlideInfo>> {
+    fn render_slides(&self, cfg: &Config, ctx: &Ctx, dir: &Path, spot: Option<&crate::ads::SpotMeta>) -> anyhow::Result<Vec<SlideInfo>> {
         use crate::slides as sl;
         let dab = &cfg.meta.dab;
         let sd = dir.join("slides");
@@ -529,7 +537,10 @@ impl MetaHub {
         let footer = match &ctx.show { Some(s) => match ctx.vars.get("HOST").filter(|h| !h.is_empty()) { Some(h) => format!("{} · {}", s.show.name, h), None => s.show.name.clone() }, None => cfg.meta.station_long.clone() };
         let c = sl::Common { w: dab.sls_width.clamp(160, 800), h: dab.sls_height.clamp(120, 600), brand: sl::parse_color(&cfg.meta.brand_color), logo: logo.as_ref(), station: &cfg.meta.station_long, footer: &footer };
         let mut out: Vec<(String, String, image::RgbImage)> = vec![];
-        for (i, kind) in dab.sls_slides.iter().enumerate() {
+        // reklamní spot s obrázkem: po dobu spotu jen jeho slide
+        let spot_img = spot.and_then(|m| sl::load_path(&m.image_path));
+        if let Some(im) = &spot_img { out.push(("00_spot.jpg".into(), "spot".into(), sl::full(&c, im))); }
+        for (i, kind) in dab.sls_slides.iter().enumerate().filter(|_| spot_img.is_none()) {
             let name = format!("{:02}_{kind}.jpg", i + 1);
             let img = match kind.as_str() {
                 "cover" => {
@@ -579,7 +590,8 @@ impl MetaHub {
             let bytes = sl::encode_jpeg(&img, dab.sls_max_kb)?;
             write_atomic(&sd.join(&n), &bytes)?;
             let mut params = String::new();
-            if !cfg.meta.url.is_empty() { params += &format!("ClickThroughURL={}\n", cfg.meta.url); }
+            let url = spot.filter(|_| kind == "spot").map(|m| m.url.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| cfg.meta.url.clone());
+            if !url.is_empty() { params += &format!("ClickThroughURL={url}\n"); }
             if !params.is_empty() { let _ = write_atomic(&sd.join(format!("{n}.sls_params")), params.as_bytes()); }
             info.push(SlideInfo { name: n, kind, bytes: bytes.len(), updated: now.clone() });
         }

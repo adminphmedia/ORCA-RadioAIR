@@ -29,6 +29,10 @@ pub fn routes() -> Router<St> {
         .route("/session", get(session))
         .route("/session/login", post(login))
         .route("/session/logout", post(logout))
+        .route("/gpio/status", get(gpio_status))
+        .route("/gpio/action", post(gpio_action))
+        .route("/gpio/trigger", post(gpio_trigger))
+        .route("/queue/live", post(queue_live))
         .route("/monitor/play", post(monitor_play))
         .route("/monitor/stop", post(monitor_stop))
         .route("/monitor/status", get(monitor_status))
@@ -211,3 +215,30 @@ async fn monitor_play(State(o): State<St>, Json(r): Json<MonReq>) -> ApiResult {
 }
 async fn monitor_stop(State(o): State<St>) -> ApiResult { o.monitor.stop(); ok() }
 async fn monitor_status(State(o): State<St>) -> ApiResult { Ok(Json(json!(o.monitor.status())).into_response()) }
+
+// --- živý vstup a ovládání z pultu (GPI / MIDI / TCP / HTTP)
+async fn gpio_status(State(o): State<St>) -> ApiResult {
+    let g = o.gpio.clone();
+    let v = tokio::task::spawn_blocking(move || g.status()).await.map_err(ApiError::from)?;
+    Ok(Json(v).into_response())
+}
+#[derive(Deserialize)]
+struct ActionReq { action: String }
+/// Akce z ovladače (Stream Deck / Companion / skript): continue, next, play, stop, mic_on, live_insert…
+async fn gpio_action(State(o): State<St>, Json(r): Json<ActionReq>) -> ApiResult {
+    let res = o.gpio.run_action(&r.action);
+    Ok(Json(json!({"ok": true, "result": res})).into_response())
+}
+#[derive(Deserialize)]
+struct TriggerReq { id: String, on: bool }
+async fn gpio_trigger(State(o): State<St>, Json(r): Json<TriggerReq>) -> ApiResult { o.gpio.manual_trigger(&r.id, r.on); ok() }
+#[derive(Deserialize)]
+struct LiveReq { #[serde(default)] label: String, #[serde(default)] duration_s: u32, #[serde(default)] auto_continue: bool, #[serde(default)] position: Option<usize>, #[serde(default)] now: bool }
+/// Živý vstup do decků (nebo hned).
+async fn queue_live(State(o): State<St>, Json(r): Json<LiveReq>) -> ApiResult {
+    let it = orca_core::model::QueueItem::live_break(&r.label, r.duration_s as i64 * 1000, r.auto_continue, "manual", "živý vstup – přidáno ručně");
+    let id = it.id.clone();
+    o.engine.queue_push(it, if r.now { Some(0) } else { r.position });
+    if r.now { o.engine.send(orca_core::engine::Cmd::Next); }
+    Ok(Json(json!({"ok": true, "id": id})).into_response())
+}

@@ -28,6 +28,52 @@ pub struct Config {
     pub relay: RelayConfig,
     pub meta: MetaConfig,
     pub general: GeneralConfig,
+    /// Vstupy z mixážního pultu a ovladačů (fader start, GPI, MIDI, TCP)
+    pub gpio: GpioConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GpioConfig {
+    pub inputs: Vec<GpiInput>,
+    /// TCP port pro textové příkazy (0 = vypnuto), např. „ACTION continue“ nebo „GPI mic1 OFF“
+    pub tcp_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GpiInput {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    /// serial | midi | tcp
+    pub source: String,
+    /// serial: port (COM3, /dev/tty.usbserial…)
+    pub port: String,
+    /// serial: cts | dsr | dcd | ri
+    pub line: String,
+    /// obrácená logika (kontakt rozpojený = zapnuto)
+    pub invert: bool,
+    /// midi: část názvu zařízení
+    pub midi_device: String,
+    /// midi: cc | note
+    pub midi_type: String,
+    /// midi: kanál 1–16 (0 = libovolný)
+    pub midi_channel: u8,
+    pub midi_number: u8,
+    /// midi CC: hodnota, nad kterou je „zapnuto“ (fader otevřen)
+    pub threshold: u8,
+    /// Akce při sepnutí (šavle nahoru / tlačítko stisknuto)
+    pub on_action: String,
+    /// Akce při rozepnutí (šavle dolů / tlačítko puštěno)
+    pub off_action: String,
+    pub debounce_ms: u32,
+}
+impl Default for GpiInput {
+    fn default() -> Self {
+        Self { id: String::new(), name: String::new(), enabled: true, source: "midi".into(), port: String::new(), line: "cts".into(), invert: false,
+            midi_device: String::new(), midi_type: "cc".into(), midi_channel: 0, midi_number: 0, threshold: 10, on_action: "mic_on".into(), off_action: "continue".into(), debounce_ms: 50 }
+    }
 }
 
 impl Default for Config {
@@ -50,6 +96,7 @@ impl Default for Config {
             relay: RelayConfig::default(),
             meta: MetaConfig::default(),
             general: GeneralConfig::default(),
+            gpio: GpioConfig::default(),
         }
     }
 }
@@ -122,6 +169,23 @@ pub struct AudioConfig {
     pub kind_trim_db: BTreeMap<TrackKind, f32>,
     /// Předposlech (monitor / PFL) – samostatný výstup; prázdné = výchozí zařízení
     pub monitor_device: String,
+    /// Vyrovnání hlasitosti programu na cílovou hlasitost (LUFS) – pro všechny zdroje
+    pub leveler: LevelerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LevelerConfig {
+    pub enabled: bool,
+    /// Max. zesílení tichého programu (dB)
+    pub max_boost_db: f64,
+    /// Max. zeslabení hlasitého programu (dB)
+    pub max_cut_db: f64,
+    /// slow | normal | fast
+    pub speed: String,
+}
+impl Default for LevelerConfig {
+    fn default() -> Self { Self { enabled: true, max_boost_db: 10.0, max_cut_db: 12.0, speed: "normal".into() } }
 }
 
 impl Default for AudioConfig {
@@ -138,6 +202,7 @@ impl Default for AudioConfig {
             duck_db: -8.0,
             kind_trim_db: BTreeMap::new(),
             monitor_device: String::new(),
+            leveler: LevelerConfig::default(),
         }
     }
 }
@@ -175,6 +240,7 @@ impl Default for AutoCueConfig {
         m.insert(TrackKind::VoiceTrack, CueThresholds { start_db: -50.0, end_db: -50.0, mix_db: None });
         m.insert(TrackKind::Asset, CueThresholds { start_db: -60.0, end_db: -60.0, mix_db: None });
         m.insert(TrackKind::Instant, CueThresholds { start_db: -50.0, end_db: -50.0, mix_db: None });
+        m.insert(TrackKind::Bed, CueThresholds { start_db: -50.0, end_db: -50.0, mix_db: None });
         Self { per_kind: m }
     }
 }
@@ -330,6 +396,7 @@ impl Default for NowPlayingConfig {
         m.insert(TrackKind::VoiceTrack, "NO-UPDATE".into());
         m.insert(TrackKind::Asset, String::new());
         m.insert(TrackKind::Instant, "NO-UPDATE".into());
+        m.insert(TrackKind::Bed, "NO-UPDATE".into());
         Self { enabled: true, export_dir: PathBuf::new(), per_kind: m, history_size: 10, next_size: 5, export_cover: true, webhooks: vec![] }
     }
 }
@@ -352,12 +419,33 @@ impl Config {
     pub fn load_or_create(path: &Path) -> Result<Self> {
         if path.exists() {
             let s = std::fs::read_to_string(path).with_context(|| format!("čtení {}", path.display()))?;
-            let c: Config = toml::from_str(&s).with_context(|| format!("chyba v {}", path.display()))?;
+            let mut c: Config = toml::from_str(&s).with_context(|| format!("chyba v {}", path.display()))?;
+            c.normalize();
             Ok(c)
         } else {
             let c = Config::default();
             c.save(path)?;
             Ok(c)
+        }
+    }
+
+    /// Doplní chybějící hodnoty pro nové typy knihoven (starší konfigurace).
+    pub fn normalize(&mut self) {
+        let ac = AutoCueConfig::default();
+        let np = NowPlayingConfig::default();
+        // klávesy: doplnit nové akce a alternativy ke starým výchozím F-klávesám
+        for (a, d) in DEFAULT_HOTKEYS {
+            let old_default = d.split(',').next().unwrap_or("").trim();
+            match self.general.hotkeys.get(a) {
+                None => { self.general.hotkeys.insert(a.to_string(), d.to_string()); }
+                Some(v) if v.trim() == old_default => { self.general.hotkeys.insert(a.to_string(), d.to_string()); }
+                _ => {}
+            }
+        }
+        for k in TrackKind::ALL {
+            if let Some(v) = ac.per_kind.get(&k) { self.autocue.per_kind.entry(k).or_insert(*v); }
+            self.library.prefixes.entry(k).or_insert_with(|| k.default_prefix().to_string());
+            if let Some(v) = np.per_kind.get(&k) { self.nowplaying.per_kind.entry(k).or_insert_with(|| v.clone()); }
         }
     }
 
@@ -914,9 +1002,13 @@ pub struct GeneralConfig {
     /// Bránit uspání počítače a zvýšit prioritu vysílání
     pub keep_awake: bool,
 }
+/// Výchozí klávesy: F-klávesy + alternativa Alt(⌥)+číslo (na Macu jsou F1–F12 systémové klávesy).
+pub const DEFAULT_HOTKEYS: [(&str, &str); 12] = [("play", "F1, Alt+1"), ("next", "F2, Alt+2"), ("pause", "F3, Alt+3"), ("stop", "F4, Alt+4"), ("stop_after", "F5, Alt+5"), ("loop", "F6, Alt+6"),
+    ("restart", "F7, Alt+7"), ("mic", "F8, Alt+8"), ("stop_instants", "Escape"), ("auto", "F9, Alt+9"), ("manual", "F10, Alt+0"), ("continue", "F12, Alt+Enter")];
+
 impl Default for GeneralConfig {
     fn default() -> Self {
-        let hk = [("play", "F1"), ("next", "F2"), ("pause", "F3"), ("stop", "F4"), ("stop_after", "F5"), ("loop", "F6"), ("restart", "F7"), ("mic", "F8"), ("stop_instants", "Escape"), ("auto", "F9"), ("manual", "F10")]
+        let hk = DEFAULT_HOTKEYS
             .into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         Self { start_with_os: false, require_login: false, auto_logout_min: 0, folder_mappings: vec![], email: EmailConfig::default(), custom_logs: vec![], silence: SilenceConfig::default(),
             backup: BackupConfig::default(), log_retention_days: 0, editor_path: String::new(), hotkeys: hk, keep_awake: true }

@@ -88,7 +88,7 @@ fn main() {
                     let url = tauri::Url::parse(&format!("http://{bind}/?panel={panel}")).map_err(|e| e.to_string())?;
                     let (h2, title) = (handle.clone(), format!("ORCA RadioAIR – {title}"));
                     handle.run_on_main_thread(move || {
-                        if let Err(e) = WebviewWindowBuilder::new(&h2, label, WebviewUrl::External(url)).title(title).inner_size(900.0, 700.0).min_inner_size(320.0, 240.0).build() {
+                        if let Err(e) = WebviewWindowBuilder::new(&h2, label, WebviewUrl::External(url)).disable_drag_drop_handler().title(title).inner_size(900.0, 700.0).min_inner_size(320.0, 240.0).build() {
                             log::error!("okno panelu: {e}");
                         }
                     }).map_err(|e| e.to_string())
@@ -97,6 +97,8 @@ fn main() {
 
             let url = tauri::Url::parse(&format!("http://{bind}/")).map_err(|e| e.to_string())?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                // přetahování souborů (hudba, obrázky) z Finderu / Průzkumníka řeší webové rozhraní
+                .disable_drag_drop_handler()
                 .title("ORCA RadioAIR")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1100.0, 700.0)

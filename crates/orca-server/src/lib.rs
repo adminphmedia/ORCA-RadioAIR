@@ -52,6 +52,7 @@ pub fn router(orca: St) -> Router {
         .route("/transport/{action}", post(transport))
         .route("/mode", post(set_mode))
         // fronta / decky
+        .route("/meters/history", get(meter_history))
         .route("/queue", get(queue_get).post(queue_add).delete(queue_clear))
         .route("/queue/{id}", axum::routing::delete(queue_remove))
         .route("/queue/move", post(queue_move))
@@ -125,6 +126,12 @@ fn info_json(o: &Orca) -> Value {
     })
 }
 
+fn leveler_json(o: &Orca) -> Value {
+    let (g, lu) = o.engine.leveler_state();
+    let c = o.cfg.read();
+    json!({"gain_db": (g * 10.0).round() / 10.0, "input_lufs": (lu * 10.0).round() / 10.0, "enabled": c.audio.leveler.enabled, "target_lufs": c.audio.target_lufs})
+}
+
 fn status_json(o: &Orca) -> Value {
     let (l, r) = o.engine.meters();
     json!({
@@ -133,6 +140,7 @@ fn status_json(o: &Orca) -> Value {
         "mode": o.automation.mode(),
         "engine": o.engine.snapshot(),
         "meters": {"l": l, "r": r},
+        "leveler": leveler_json(o),
         "encoders": o.encoders.statuses(),
         "queue_length": o.engine.queue.lock().len(),
     })
@@ -154,6 +162,7 @@ async fn transport(State(o): State<St>, Path(action): Path<String>) -> ApiResult
         "restart" => Cmd::Restart,
         "talkover" => Cmd::TalkOver(true),
         "cancel-talkover" => Cmd::TalkOver(false),
+        "continue" => { o.engine.live_continue(); return ok(); }
         _ => return Err(bad("neznámá akce")),
     };
     o.engine.send(cmd);
@@ -281,6 +290,15 @@ async fn encoder_action(State(o): State<St>, Path((id, action)): Path<(String, S
 // ---------------------------------------------------------------------------------------------
 // WebSocket: události v reálném čase + stav 5× za sekundu
 
+#[derive(Deserialize)]
+struct MeterQ { #[serde(default)] seconds: Option<f32> }
+/// Historie úrovní výstupu (pro graf hlasitosti v čase po otevření okna).
+async fn meter_history(State(o): State<St>, Query(q): Query<MeterQ>) -> ApiResult {
+    let n = ((q.seconds.unwrap_or(60.0).clamp(1.0, 120.0)) * 100.0) as usize;
+    let (seq, bms, blocks) = o.engine.meter_blocks(0, n);
+    Ok(Json(json!({"seq": seq, "block_ms": bms, "blocks": blocks})).into_response())
+}
+
 async fn ws_handler(State(o): State<St>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| ws_session(o, socket))
 }
@@ -297,11 +315,22 @@ async fn ws_session(o: St, socket: WebSocket) {
     let hello = json!({"type": "hello", "info": info_json(&o)}).to_string();
     if tx.send(Message::Text(hello.into())).await.is_err() { return; }
     let mut tick = tokio::time::interval(Duration::from_millis(200));
+    // plynulé měřiče: ~30× za sekundu nové bloky po 10 ms (špička + RMS)
+    let mut mtick = tokio::time::interval(Duration::from_millis(33));
+    let mut mseq = o.engine.meter_blocks(u64::MAX, 0).0;
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 let s = status_json(&o).to_string();
                 if tx.send(Message::Text(s.into())).await.is_err() { break; }
+            }
+            _ = mtick.tick() => {
+                let (seq, bms, blocks) = o.engine.meter_blocks(mseq, 50);
+                if !blocks.is_empty() {
+                    mseq = seq;
+                    let s = json!({"type": "meters", "seq": seq, "block_ms": bms, "blocks": blocks}).to_string();
+                    if tx.send(Message::Text(s.into())).await.is_err() { break; }
+                }
             }
             Some(ev) = erx.recv() => {
                 if tx.send(Message::Text(ev.into())).await.is_err() { break; }

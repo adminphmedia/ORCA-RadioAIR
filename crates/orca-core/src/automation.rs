@@ -67,7 +67,9 @@ impl Automation {
         let st = self.engine.snapshot();
         let mut t = now_local(&cfg);
         if let Some(cur) = &st.current {
-            t += chrono::Duration::milliseconds((cur.mix_at_ms - cur.position_ms).max(0));
+            // živý vstup čeká na moderátora – počítá se plánovaná délka, ne „neomezené“ čekání
+            let left = if cur.item.live && !cur.item.live_auto { (cur.item.track.duration_ms - cur.position_ms).max(0) } else { (cur.mix_at_ms - cur.position_ms).max(0) };
+            t += chrono::Duration::milliseconds(left);
         }
         let mut q = self.engine.queue_snapshot();
         let mut last_start = t;
@@ -79,8 +81,7 @@ impl Automation {
             }
             it.eta = Some(t.to_rfc3339());
             last_start = t;
-            let (ci, mix, _) = it.track.effective_cues();
-            t += chrono::Duration::milliseconds((mix - ci).max(0));
+            t += chrono::Duration::milliseconds(it.slot_ms());
         }
         q
     }
@@ -91,8 +92,7 @@ impl Automation {
         match q.iter().rev().find(|i| !i.is_attached_overlay()) {
             Some(last) => {
                 let eta = last.eta.as_deref().and_then(parse).unwrap_or_else(|| now_local(cfg));
-                let (ci, mix, _) = last.track.effective_cues();
-                eta + chrono::Duration::milliseconds((mix - ci).max(0))
+                eta + chrono::Duration::milliseconds(last.slot_ms())
             }
             None => {
                 let st = self.engine.snapshot();

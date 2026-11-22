@@ -70,7 +70,8 @@ impl Default for Show {
 #[serde(default)]
 pub struct PlItem {
     pub id: String,
-    /// track | select | episode | stitch | relay | note
+    /// track | select | episode | stitch | relay | bed | note
+    /// bed: mode "on" (track_id nebo náhodně z kategorie Podkresů) | "off"
     #[serde(rename = "type")]
     pub typ: String,
     pub track_id: Option<i64>,
@@ -447,6 +448,8 @@ pub fn estimate_items(db: &Db, items: &[PlItem]) -> i64 {
             "relay" => total += it.duration_s as i64 * 1000,
             "select" => total += if it.kind.unwrap_or(TrackKind::Song) == TrackKind::Song { 210_000 } else { 15_000 },
             "stitch" => total += 20_000,
+            "live" => total += it.duration_s as i64 * 1000,
+            "bed" => total += if it.mode == "off" { 3000 } else { it.track_id.and_then(|id| db.get_track(id).ok().flatten()).map(|t| t.bed_intro_ms).unwrap_or(3000) },
             "episode" => {
                 if let Ok(Some(e)) = it.show_id.map(|s| pick_episode(db, s, &it.mode, it.nth, it.episode_id)).transpose().map(|x| x.flatten()) {
                     total += estimate_items(db, &e.parts);
@@ -483,6 +486,18 @@ pub fn expand(db: &Db, cfg: &Config, items: &[PlItem], source: &str, reason: &st
             "stitch" => if let Some(k) = &it.stitch {
                 out.push(crate::stitcher::queue_item(k, 20_000, &format!("{reason} • Stitcher")));
             },
+            "live" => out.push(QueueItem::live_break(&it.label, it.duration_s as i64 * 1000, it.mode == "auto", source, format!("{reason} • živý vstup"))),
+            "bed" => {
+                if it.mode == "off" { out.push(QueueItem::bed_off(source, format!("{reason} • podkres OFF"))); continue; }
+                let picked = match it.track_id {
+                    Some(id) => db.get_track(id)?.filter(|t| t.enabled && !t.missing).map(|t| (t, "pevně zvolený podkres".to_string())),
+                    None => { let mut sel = it.clone(); sel.kind = Some(TrackKind::Bed); sel.mode = "rotation".into(); select_track(db, cfg, &sel, &excl)? }
+                };
+                match picked {
+                    Some((t, why)) => out.push(QueueItem::bed_on(t, source, format!("{reason} • podkres ON • {why}"))),
+                    None => warnings.push("pro podkres není k dispozici soubor (knihovna Podkresy)".into()),
+                }
+            }
             "relay" => if let Some(rid) = &it.relay_id {
                 match crate::relay::queue_item(cfg, rid, it.duration_s as i64 * 1000, &format!("{reason} • rebroadcast")) {
                     Some(q) => out.push(q),

@@ -185,7 +185,7 @@ impl General {
                 let mut sent: HashMap<String, Instant> = HashMap::new();
                 while let Ok(ev) = rx.recv() {
                     match ev {
-                        Event::TrackStarted { item, channel } if channel == "main" => { let c = cfg.read().clone(); write_custom_logs(&c, &data_dir, &item.track, &item.source); }
+                        Event::TrackStarted { item, channel } if channel == "main" || channel == "bed" => { let c = cfg.read().clone(); write_custom_logs(&c, &data_dir, &item.track, &item.source); }
                         Event::Alert { level, code, message } => {
                             let c = cfg.read().clone();
                             let e = &c.general.email;
