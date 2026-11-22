@@ -50,7 +50,13 @@ jobs:
 
       - name: Build
         working-directory: apps/orca-desktop
-        run: cargo tauri build ${{ matrix.args }}
+        shell: bash
+        run: |
+          # Podepsání Apple certifikátem jen pokud jsou nastavené secrets, jinak ad-hoc podpis
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          cargo tauri build ${{ matrix.args }}
         env:
           # Volitelné podepsání a notarizace pro macOS (Apple Developer účet):
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
