@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Oprávnění aplikace pro podpis s hardened runtime (nutné pro notarizaci Apple).
+     audio-input: živé vstupy, nahrávání a mikrofon moderátora (zvukový vstup přes CoreAudio). -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>
