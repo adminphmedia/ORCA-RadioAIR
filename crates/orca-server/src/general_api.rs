@@ -16,6 +16,9 @@ use serde_json::json;
 pub fn routes() -> Router<St> {
     Router::new()
         .route("/general/status", get(status))
+        .route("/update/status", get(update_status))
+        .route("/update/check", post(update_check))
+        .route("/update/install", post(update_install))
         .route("/general/backup", post(backup))
         .route("/general/backups", get(backups))
         .route("/general/integrity", post(integrity))
@@ -89,6 +92,25 @@ async fn status(State(o): State<St>) -> ApiResult {
 async fn backup(State(o): State<St>) -> ApiResult {
     let p = blocking(move || { let c = o.cfg.read().clone(); let p = general::backup_now(&o.db, &c, &o.data_dir)?; *o.general.last_backup.write() = Some(p.clone()); Ok(p) }).await?;
     Ok(Json(json!({"ok": true, "path": p})).into_response())
+}
+
+async fn update_status(State(o): State<St>) -> ApiResult {
+    let mut s = o.update_state.lock().clone();
+    s.supported = o.update_hook.read().is_some();
+    Ok(Json(json!(s)).into_response())
+}
+
+async fn update_check(State(o): State<St>) -> ApiResult {
+    let s = blocking(move || Ok(o.update_check())).await?;
+    Ok(Json(json!(s)).into_response())
+}
+
+async fn update_install(State(o): State<St>) -> ApiResult {
+    if o.update_hook.read().is_none() { return Err(bad("Aktualizace jsou dostupné jen v desktopové aplikaci ORCA RadioAIR.")); }
+    if o.update_state.lock().available.is_none() { return Err(bad("Není k dispozici žádná nová verze – nejdřív zkontrolujte aktualizace.")); }
+    // běží na pozadí; průběh hlásí /update/status, po instalaci se aplikace restartuje
+    std::thread::Builder::new().name("orca-update".into()).spawn(move || { if let Err(e) = o.update_install() { log::error!("aktualizace: {e}"); } }).map_err(|e| bad(&e.to_string()))?;
+    Ok(Json(json!({"ok": true})).into_response())
 }
 
 async fn backups(State(o): State<St>) -> ApiResult {

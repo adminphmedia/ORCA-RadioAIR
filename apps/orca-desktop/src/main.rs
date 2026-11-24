@@ -24,6 +24,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // přibalené zdroje: ffmpeg a UI
             if let Ok(res) = app.path().resource_dir() {
@@ -77,6 +78,51 @@ fn main() {
                 })?;
             }
             rx.recv().map_err(|e| e.to_string())??;
+
+            // aktualizace jedním tlačítkem (Obecné → Aktualizace); podpis balíčku ověřuje updater veřejným klíčem
+            {
+                use tauri_plugin_updater::UpdaterExt;
+                // updater je async – volá se ve vlastním vlákně, aby nezáleželo na tom, odkud ho API zavolá
+                fn run<T: Send + 'static>(f: impl std::future::Future<Output = Result<T, String>> + Send + 'static) -> Result<T, String> {
+                    std::thread::spawn(move || tauri::async_runtime::block_on(f)).join().map_err(|_| "aktualizace: vnitřní chyba".to_string())?
+                }
+                let (h1, h2) = (app.handle().clone(), app.handle().clone());
+                let orca2 = orca.clone();
+                *orca.update_hook.write() = Some(orca_core::update::UpdateHook {
+                    check: Arc::new(move || {
+                        let h = h1.clone();
+                        run(async move {
+                            let u = h.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| format!("Kontrola aktualizací selhala: {e}"))?;
+                            Ok(u.map(|u| orca_core::update::UpdateInfo { version: u.version.clone(), notes: u.body.clone().unwrap_or_default(), date: u.date.map(|d| d.to_string()).unwrap_or_default() }))
+                        })
+                    }),
+                    install: Arc::new(move |state| {
+                        let h = h2.clone();
+                        let orca = orca2.clone();
+                        run(async move {
+                            let u = h.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?.ok_or("Nová verze už není k dispozici.")?;
+                            let mut got: u64 = 0;
+                            let st = state.clone();
+                            let bytes = u.download(move |chunk, total| {
+                                got += chunk as u64;
+                                if let Some(t) = total { if t > 0 { st.lock().progress = Some(((got * 100) / t).min(100) as u8); } }
+                            }, || {}).await.map_err(|e| format!("Stažení selhalo: {e}"))?;
+                            state.lock().progress = Some(100);
+                            // vysílání se na pár sekund přeruší: streamy zastavit čistě, pak instalovat a restartovat
+                            orca.encoders.stop_all();
+                            u.install(bytes).map_err(|e| format!("Instalace selhala: {e}"))?;
+                            h.restart();
+                        })
+                    }),
+                });
+                // automatická kontrola: po spuštění a pak každých 6 hodin (jen upozorní, nic neinstaluje samo)
+                let o = orca.clone();
+                std::thread::Builder::new().name("orca-update-check".into()).spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(45));
+                    let _ = o.update_check();
+                    std::thread::sleep(std::time::Duration::from_secs(6 * 3600 - 45));
+                })?;
+            }
 
             // samostatná okna panelů (více obrazovek) – pozice a velikost si pamatuje window-state
             {

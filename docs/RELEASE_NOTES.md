@@ -1,3 +1,10 @@
+# ORCA RadioAIR 0.7.2 – testovací verze
+
+## Novinky v 0.7.2
+- **Aktualizace jedním tlačítkem** – ORCA sama zjistí novou verzi (po spuštění a pak každých 6 h), ukáže tlačítko v horní liště a v Obecné → Aktualizace. „Aktualizovat a restartovat“ stáhne podepsaný balíček, nainstaluje ho a restartuje aplikaci. Tuto verzi 0.7.2 je potřeba nainstalovat ještě ručně, další už půjdou tlačítkem.
+- **Nastavení se při aktualizaci zachová** – data (nastavení, knihovna, plány, reklamy, uživatelé, logy) jsou ve složce dat mimo aplikaci; před prvním spuštěním nové verze se navíc automaticky zálohují do Backups/pred-aktualizaci_… (posledních 5).
+- **Ovládací panel:** tlačítka Sbalit / Rozbalit všechny nabídky vedle „Zpět do studia“.
+
 # ORCA RadioAIR 0.7.1 – testovací verze
 
 ## Opravy v 0.7.1

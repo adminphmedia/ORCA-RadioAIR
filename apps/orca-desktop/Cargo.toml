@@ -1,6 +1,6 @@
 [package]
 name = "orca-desktop"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 description = "ORCA RadioAIR – odbavovací systém pro rádio"
 
@@ -12,6 +12,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+serde_json = "1"
 orca-core = { path = "../../crates/orca-core" }
 orca-server = { path = "../../crates/orca-server" }
 tokio = { version = "1", features = ["full"] }

@@ -56,6 +56,8 @@ pub fn default_data_dir() -> PathBuf {
 }
 
 /// Otevření samostatného okna s panelem studia (desktopová aplikace – více obrazovek): (panel, titulek)
+pub mod update;
+
 pub type WindowHook = Arc<dyn Fn(&str, &str) -> std::result::Result<(), String> + Send + Sync>;
 
 /// Celá běžící aplikace.
@@ -78,11 +80,15 @@ pub struct Orca {
     pub monitor: monitor::Monitor,
     pub gpio: Arc<gpio::Gpio>,
     pub inbox: Arc<station::Inbox>,
+    pub update_hook: RwLock<Option<update::UpdateHook>>,
+    pub update_state: Arc<parking_lot::Mutex<update::UpdateState>>,
 }
 
 impl Orca {
     pub fn start(data_dir: &Path) -> Result<Arc<Orca>> {
         std::fs::create_dir_all(data_dir)?;
+        // nová verze: záloha databáze a nastavení dřív, než je migrace změní
+        let (updated_from, pre_update_backup) = update::backup_on_version_change(data_dir);
         let config_path = data_dir.join("orca.toml");
         let mut cfg0 = Config::load_or_create(&config_path)?;
         if library::ensure_kind_folders(&mut cfg0, data_dir) { cfg0.save(&config_path)?; }
@@ -124,8 +130,42 @@ impl Orca {
             }).ok();
         }
         encoders.autostart();
+        update::mark_version(data_dir);
+        if let Some(v) = &updated_from { events.alert("info", "updated", format!("ORCA RadioAIR aktualizována z verze {v} na {VERSION}. Nastavení, knihovna i plány zůstaly zachované.")); }
+        let update_state = Arc::new(parking_lot::Mutex::new(update::UpdateState { current: VERSION.into(), updated_from, pre_update_backup, ..Default::default() }));
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, update_hook: RwLock::new(None), update_state }))
+    }
+
+    /// Zjistí, zda je k dispozici nová verze (jen v desktopové aplikaci).
+    pub fn update_check(&self) -> update::UpdateState {
+        let Some(h) = self.update_hook.read().clone() else { return self.update_state.lock().clone() };
+        { let mut s = self.update_state.lock(); if s.checking || s.installing { return s.clone(); } s.checking = true; s.supported = true; }
+        let r = (h.check)();
+        let mut s = self.update_state.lock();
+        s.checking = false;
+        s.checked_at = Some(chrono::Local::now().to_rfc3339());
+        match r {
+            Ok(a) => {
+                let notify = a.as_ref().map(|x| s.available.as_ref().map(|y| y.version != x.version).unwrap_or(true)).unwrap_or(false);
+                if notify { if let Some(x) = &a { self.events.alert("info", "update_available", format!("K dispozici je nová verze ORCA RadioAIR {} – Obecné → Aktualizace.", x.version)); } }
+                s.available = a; s.error = None;
+            }
+            Err(e) => s.error = Some(e),
+        }
+        s.clone()
+    }
+
+    /// Stáhne a nainstaluje novou verzi; aplikace se poté sama restartuje.
+    pub fn update_install(&self) -> Result<(), String> {
+        let h = self.update_hook.read().clone().ok_or("Aktualizace jsou dostupné jen v desktopové aplikaci.")?;
+        { let mut s = self.update_state.lock(); if s.installing { return Err("Aktualizace už probíhá.".into()); } s.installing = true; s.progress = Some(0); s.error = None; }
+        // pojistka navíc: záloha databáze a nastavení
+        let c = self.cfg.read().clone();
+        if let Err(e) = general::backup_now(&self.db, &c, &self.data_dir) { log::warn!("záloha před aktualizací: {e}"); }
+        let r = (h.install)(self.update_state.clone());
+        if let Err(e) = &r { let mut s = self.update_state.lock(); s.installing = false; s.progress = None; s.error = Some(e.clone()); }
+        r
     }
 
     /// Uloží novou konfiguraci a aplikuje ji (sledované složky, výstup, encodery).
