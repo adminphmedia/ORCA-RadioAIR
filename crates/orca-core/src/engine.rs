@@ -826,6 +826,8 @@ impl Engine {
                 if v.item.source == "instant" && instants_out.is_some() { v.render(&mut inst_mix, BLOCK, 1.0); }
                 else { v.render(&mut mix, BLOCK, extra); }
             }
+            // mikrofon přes počítač (režim „mix“) – přimíchá se při zapnutém mikrofonu
+            crate::mic::mix_into(&mut mix, talkover);
             if let Some(o) = instants_out.as_mut() {
                 for x in inst_mix.iter_mut() { *x = soft_clip(*x); }
                 if o.producer.slots() >= inst_mix.len() {

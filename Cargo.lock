@@ -3304,7 +3304,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orca-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -3325,6 +3325,7 @@ dependencies = [
  "notify-debouncer-full",
  "parking_lot 0.13.0",
  "rand 0.8.8",
+ "roxmltree",
  "rtrb",
  "rubato",
  "rusqlite",
@@ -3344,7 +3345,7 @@ dependencies = [
 
 [[package]]
 name = "orca-desktop"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3362,7 +3363,7 @@ dependencies = [
 
 [[package]]
 name = "orca-server"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4036,6 +4037,12 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsqlite-vfs"

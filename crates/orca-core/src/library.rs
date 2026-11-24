@@ -422,6 +422,28 @@ impl Library {
         Ok(())
     }
 
+    /// Soubory (ne hudba), kterým skončila platnost – nejdřív nejstarší.
+    pub fn expired(&self, older_than_days: u32) -> Result<Vec<Track>> {
+        let now = chrono::Local::now().naive_local();
+        let limit = now - chrono::Duration::days(older_than_days as i64);
+        let all = self.db.with_conn(|c| -> Result<Vec<Track>> {
+            let mut st = c.prepare(&format!("SELECT {} FROM tracks WHERE kind<>'song' AND valid_to<>''", crate::db::TRACK_COLS))?;
+            let v = st.query_map([], crate::db::row_track)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(v)
+        })?;
+        let mut v: Vec<Track> = all.into_iter().filter(|t| t.expired(limit)).collect();
+        v.sort_by(|a, b| a.valid_to.cmp(&b.valid_to));
+        Ok(v)
+    }
+
+    /// Přesune soubory po platnosti do koše knihovny a odebere je z knihovny. Vrací počet.
+    pub fn delete_expired(&self, ids: Option<&[i64]>, older_than_days: u32) -> Result<usize> {
+        let list = self.expired(older_than_days)?;
+        let mut n = 0;
+        for t in list.iter().filter(|t| ids.map(|i| i.contains(&t.id)).unwrap_or(true)) { self.delete_track(t.id)?; n += 1; }
+        Ok(n)
+    }
+
     /// Vlastní obal skladby.
     pub fn set_custom_cover(&self, id: i64, data: &[u8], mime: &str) -> Result<()> {
         let dir = crate::station::images_dir(&self.cfg.read(), &self.data_dir, "covers");

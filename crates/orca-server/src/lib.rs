@@ -58,6 +58,13 @@ pub fn router(orca: St) -> Router {
         .route("/queue", get(queue_get).post(queue_add).delete(queue_clear))
         .route("/queue/{id}", axum::routing::delete(queue_remove))
         .route("/queue/move", post(queue_move))
+        .route("/ai/presets", get(ai_presets))
+        .route("/ai/models", post(ai_models))
+        .route("/ai/track-notes/{id}", post(ai_track_notes))
+        .route("/ai/batch", get(ai_batch_status).post(ai_batch_start))
+        .route("/ai/batch/cancel", post(ai_batch_cancel))
+        .route("/library/expired", get(expired_list).post(expired_delete))
+        .route("/queue/preview-next-hour", get(queue_preview))
         .route("/queue/{id}/play-now", post(queue_play_now))
         // knihovna
         .route("/tracks", get(tracks_list))
@@ -233,6 +240,65 @@ async fn track_play_now(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
     o.engine.send(Cmd::PlayNow);
     ok()
 }
+// ---------------------------------------------------------------------------------------------
+// AI – informace o skladbách pro moderátora
+
+async fn ai_presets(State(o): State<St>) -> ApiResult {
+    let cfg = o.cfg.read().clone();
+    let p: Vec<_> = orca_core::ai::PRESETS.iter().map(|(id, name, text)| json!({ "id": id, "name": name, "text": text })).collect();
+    Ok(Json(json!({ "presets": p, "system_prompt": orca_core::ai::system_prompt(&cfg) })).into_response())
+}
+/// Seznam modelů – s nastavením z formuláře (ještě neuloženým); maska klíče = uložený klíč.
+async fn ai_models(State(o): State<St>, Json(mut a): Json<orca_core::ai::AiConfig>) -> ApiResult {
+    if a.api_key.starts_with(KEY_MASK) { a.api_key = o.cfg.read().ai.api_key.clone(); }
+    let v = tokio::task::spawn_blocking(move || orca_core::ai::models(&a)).await?.map_err(|e| bad(&e.to_string()))?;
+    Ok(Json(v).into_response())
+}
+/// Vygeneruje návrh textu pro moderátora (neukládá – uloží se v editoru skladby).
+async fn ai_track_notes(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
+    let t = o.db.get_track(id)?.ok_or_else(|| not_found("skladba"))?;
+    let cfg = o.cfg.read().clone();
+    let (text, source) = tokio::task::spawn_blocking(move || orca_core::ai::track_notes(&cfg, &t)).await?.map_err(|e| bad(&e.to_string()))?;
+    Ok(Json(json!({ "text": text, "source": source })).into_response())
+}
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AiBatch { ids: Vec<i64>, overwrite: bool }
+async fn ai_batch_start(State(o): State<St>, Json(r): Json<AiBatch>) -> ApiResult {
+    let cfg = o.cfg.read().clone();
+    let s = orca_core::ai::batch_start(o.db.clone(), cfg, r.ids, r.overwrite).map_err(|e| bad(&e.to_string()))?;
+    Ok(Json(s).into_response())
+}
+async fn ai_batch_status() -> ApiResult { Ok(Json(orca_core::ai::batch_status()).into_response()) }
+async fn ai_batch_cancel() -> ApiResult { orca_core::ai::batch_cancel(); ok() }
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ExpiredReq { ids: Option<Vec<i64>> }
+/// Soubory po platnosti (ne hudba).
+async fn expired_list(State(o): State<St>) -> ApiResult {
+    let lib = o.library.clone();
+    Ok(Json(tokio::task::spawn_blocking(move || lib.expired(0)).await??).into_response())
+}
+/// Přesune soubory po platnosti do koše knihovny (všechny, nebo vybrané).
+async fn expired_delete(State(o): State<St>, Json(r): Json<ExpiredReq>) -> ApiResult {
+    let lib = o.library.clone();
+    let n = tokio::task::spawn_blocking(move || lib.delete_expired(r.ids.as_deref(), 0)).await??;
+    Ok(Json(json!({ "deleted": n })).into_response())
+}
+
+/// Náhled další hodiny (ruční režim – co by se hrálo, bez zařazení do fronty).
+async fn queue_preview(State(o): State<St>) -> ApiResult {
+    let a = o.automation.clone();
+    let cfg = o.cfg.read().clone();
+    let r = tokio::task::spawn_blocking(move || {
+        use chrono::Timelike;
+        let n = orca_core::automation::now_local(&cfg);
+        let next = n.with_minute(0).and_then(|d| d.with_second(0)).unwrap_or(n) + chrono::Duration::hours(1);
+        serde_json::json!({ "hour": next.format("%H:00").to_string(), "start": next.to_rfc3339(), "items": a.preview_hour(next) })
+    }).await?;
+    Ok(Json(r).into_response())
+}
 /// Přehrát hned položku, která už je v deckách (přesune se na začátek – nezdvojí se).
 async fn queue_play_now(State(o): State<St>, Path(id): Path<String>) -> ApiResult {
     if !o.engine.queue_move(&id, 0) { return Err(not_found("položka decků")); }
@@ -269,11 +335,19 @@ async fn report_csv(State(o): State<St>, Query(q): Query<LogQuery>) -> ApiResult
     Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=\"orca-vysilani.csv\"")], csv).into_response())
 }
 
-async fn config_get(State(o): State<St>) -> Json<Config> { Json(o.cfg.read().clone()) }
-async fn config_put(State(o): State<St>, Json(c): Json<Config>) -> ApiResult {
+/// Klíč AI se do prohlížeče neposílá celý – jen maska s posledními znaky.
+const KEY_MASK: &str = "••••••";
+fn masked(mut c: Config) -> Config {
+    let k = c.ai.api_key.trim().to_string();
+    if !k.is_empty() { c.ai.api_key = format!("{KEY_MASK}{}", k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>()); }
+    c
+}
+async fn config_get(State(o): State<St>) -> Json<Config> { Json(masked(o.cfg.read().clone())) }
+async fn config_put(State(o): State<St>, Json(mut c): Json<Config>) -> ApiResult {
+    if c.ai.api_key.starts_with(KEY_MASK) { c.ai.api_key = o.cfg.read().ai.api_key.clone(); }
     let o2 = o.clone();
     tokio::task::spawn_blocking(move || o2.apply_config(c)).await??;
-    Ok(Json(o.cfg.read().clone()).into_response())
+    Ok(Json(masked(o.cfg.read().clone())).into_response())
 }
 #[derive(Deserialize)]
 struct UiSettings { language: Option<String>, theme: Option<String> }

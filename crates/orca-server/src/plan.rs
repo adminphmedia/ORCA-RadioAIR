@@ -63,6 +63,13 @@ pub fn routes() -> Router<St> {
         .route("/meta/epg/si.xml", get(epg_si))
         .route("/meta/epg/pi.xml", get(epg_pi))
         .route("/meta/rds/ports", get(rds_ports))
+        .route("/meta/info", get(info_state))
+        .route("/meta/info/refresh", post(info_refresh))
+        .route("/meta/info/skip", post(info_skip))
+        .route("/meta/info/preview", get(info_preview))
+        .route("/meta/info/preview.jpg", get(info_preview_jpg))
+        .route("/meta/info/image", post(info_image).layer(DefaultBodyLimit::max(30 * 1024 * 1024)))
+        .route("/meta/info/source-image/{id}", get(info_source_image))
         .route("/ui/window", post(ui_window))
 }
 
@@ -375,6 +382,43 @@ async fn logo_delete(State(o): State<St>) -> ApiResult {
     cfg.meta.logo_path.clear();
     o.apply_config(cfg)?;
     ok()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Informace na displeji
+
+async fn info_state(State(o): State<St>) -> ApiResult {
+    let cfg = o.cfg.read().clone();
+    Ok(Json(json!({ "state": *o.meta.info_state.read(), "sources": o.meta.info.statuses(&cfg.meta.info) })).into_response())
+}
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct InfoQ { id: Option<String>, playlist: String, i: usize }
+async fn info_refresh(State(o): State<St>, Json(q): Json<InfoQ>) -> ApiResult { o.meta.info.request(q.id.as_deref()); ok() }
+async fn info_skip(State(o): State<St>) -> ApiResult { o.meta.info_skip(); ok() }
+async fn info_preview(State(o): State<St>, Query(q): Query<InfoQ>) -> ApiResult {
+    let m = o.meta.clone();
+    Ok(Json(tokio::task::spawn_blocking(move || m.info_preview(&q.playlist)).await?).into_response())
+}
+async fn info_preview_jpg(State(o): State<St>, Query(q): Query<InfoQ>) -> ApiResult {
+    let m = o.meta.clone();
+    let b = tokio::task::spawn_blocking(move || m.info_preview_slide(&q.playlist, q.i)).await?.ok_or_else(|| not_found("slide"))?;
+    Ok(([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "no-cache")], b).into_response())
+}
+/// Obrázek k informační sadě (logo platformy, vlastní obrázek, záložní obrázek kamery) – vrací cestu pro konfiguraci.
+async fn info_image(State(o): State<St>, body: Bytes) -> ApiResult {
+    let (body, ext) = check_image(&o, &body)?;
+    let path = media_path(&o, "info", chrono::Utc::now().timestamp_millis(), ext);
+    if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
+    std::fs::write(&path, &body)?;
+    Ok(Json(json!({"ok": true, "path": path})).into_response())
+}
+async fn info_source_image(State(o): State<St>, Path(id): Path<String>) -> ApiResult {
+    let p = o.cfg.read().meta.info.source(&id).map(|s| s.image_path.clone()).unwrap_or_default();
+    if p.is_empty() { return Err(not_found("obrázek")); }
+    let b = std::fs::read(&p).map_err(|_| not_found("obrázek"))?;
+    let ct = if p.ends_with(".png") { "image/png" } else { "image/jpeg" };
+    Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "no-cache")], b).into_response())
 }
 
 fn xml(body: String) -> Response { ([(header::CONTENT_TYPE, "application/xml; charset=utf-8")], body).into_response() }

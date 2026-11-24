@@ -271,6 +271,10 @@ pub struct MetaHub {
     override_text: Mutex<Option<(String, Instant)>>,
     force: Mutex<bool>,
     epg_force: Mutex<bool>,
+    /// Informace na displeji: stažená data sad a stav rotace
+    pub info: crate::info::InfoCache,
+    pub info_state: RwLock<crate::info::InfoState>,
+    info_skip: Mutex<bool>,
 }
 
 struct Loop {
@@ -292,6 +296,12 @@ struct Loop {
     slide_at: Option<Instant>,
     epg_at: Option<Instant>,
     last_dls: String,
+    info_frames: Vec<crate::info::Frame>,
+    info_i: usize,
+    info_until: Option<Instant>,
+    info_pl: String,
+    info_seq: u64,
+    info_cursors: HashMap<String, usize>,
 }
 
 pub fn dab_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
@@ -301,10 +311,48 @@ pub fn dab_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
 impl MetaHub {
     pub fn start(db: Arc<Db>, cfg: Arc<RwLock<Config>>, engine: Arc<Engine>, encoders: Arc<EncoderManager>, data_dir: PathBuf) -> Arc<Self> {
         let h = Arc::new(Self { db, cfg, engine, encoders, data_dir, state: RwLock::new(MetaState::default()), rds: RdsSender::new(),
-            weather: RwLock::new(None), override_text: Mutex::new(None), force: Mutex::new(true), epg_force: Mutex::new(true) });
+            weather: RwLock::new(None), override_text: Mutex::new(None), force: Mutex::new(true), epg_force: Mutex::new(true),
+            info: crate::info::InfoCache::default(), info_state: RwLock::new(crate::info::InfoState::default()), info_skip: Mutex::new(false) });
         { let h = h.clone(); std::thread::Builder::new().name("orca-meta".into()).spawn(move || h.run()).ok(); }
         { let h = h.clone(); std::thread::Builder::new().name("orca-weather".into()).spawn(move || h.weather_loop()).ok(); }
+        { let h = h.clone(); std::thread::Builder::new().name("orca-info-fetch".into()).spawn(move || loop {
+            let cfg = h.cfg.read().clone();
+            if cfg.meta.info.enabled { h.info.tick(&cfg.meta.info, cfg.station.language == "en"); }
+            std::thread::sleep(Duration::from_secs(3));
+        }).ok(); }
         h
+    }
+
+    /// Přeskočit na další sdělení displeje.
+    pub fn info_skip(&self) { *self.info_skip.lock() = true; }
+
+    /// Sdělení playlistu pro náhled (nevysílá se) – s čerstvými kurzory.
+    pub fn info_preview(&self, playlist: &str) -> Vec<crate::info::Frame> {
+        let cfg = self.cfg.read().clone();
+        let Some(pl) = cfg.meta.info.playlists.iter().find(|p| p.id == playlist) else { return vec![] };
+        crate::info::frames(&cfg, pl, &self.context(), &self.info, &mut HashMap::new())
+    }
+
+    /// Slide sdělení pro náhled (JPEG).
+    pub fn info_preview_slide(&self, playlist: &str, i: usize) -> Option<Vec<u8>> {
+        let cfg = self.cfg.read().clone();
+        let frames = self.info_preview(playlist);
+        let f = frames.get(i)?;
+        let ctx = self.context();
+        let logo = crate::slides::load_path(&cfg.meta.logo_path);
+        let footer = self.footer_text(&cfg, &ctx);
+        let c = self.common(&cfg, logo.as_ref(), &footer);
+        let img = crate::info::render_slide(&cfg, f, &ctx, &self.info, &c)?;
+        crate::slides::encode_jpeg(&img, cfg.meta.dab.sls_max_kb).ok()
+    }
+
+    fn footer_text(&self, cfg: &Config, ctx: &Ctx) -> String {
+        match &ctx.show { Some(s) => match ctx.vars.get("HOST").filter(|h| !h.is_empty()) { Some(h) => format!("{} · {}", s.show.name, h), None => s.show.name.clone() }, None => cfg.meta.station_long.clone() }
+    }
+
+    fn common<'a>(&self, cfg: &'a Config, logo: Option<&'a image::DynamicImage>, footer: &'a str) -> crate::slides::Common<'a> {
+        let dab = &cfg.meta.dab;
+        crate::slides::Common { w: dab.sls_width.clamp(160, 800), h: dab.sls_height.clamp(120, 600), brand: crate::slides::parse_color(&cfg.meta.brand_color), logo, station: &cfg.meta.station_long, footer }
     }
 
     pub fn refresh(&self) { *self.force.lock() = true; *self.epg_force.lock() = true; self.rds.reset(); }
@@ -352,7 +400,8 @@ impl MetaHub {
 
     fn run(self: Arc<Self>) {
         let mut l = Loop { last_item: None, dls_i: 0, dls_at: None, rt_i: 0, rt_at: None, rt_text: String::new(), rt_ab: false, ps_i: 0, ps_at: None, ps_list: vec![],
-            toggle: false, show_at: None, show: (None, None), slide_sig: String::new(), slide_i: 0, slide_at: None, epg_at: None, last_dls: String::new() };
+            toggle: false, show_at: None, show: (None, None), slide_sig: String::new(), slide_i: 0, slide_at: None, epg_at: None, last_dls: String::new(),
+            info_frames: vec![], info_i: 0, info_until: None, info_pl: String::new(), info_seq: 0, info_cursors: HashMap::new() };
         loop {
             if let Err(e) = self.tick(&mut l) { log::error!("metadata: {e}"); }
             std::thread::sleep(Duration::from_millis(500));
@@ -396,32 +445,27 @@ impl MetaHub {
         // ---- DAB DLS
         let dir = dab_dir(&cfg, &self.data_dir);
         let dab = &cfg.meta.dab;
+        let info_on = cfg.meta.info.enabled;
+        // ---- Informace na displeji (playlisty sdělení): text i slide jednoho sdělení současně
+        let mut info_rt: Option<Tagged> = None;
+        if info_on {
+            info_rt = self.info_tick(&cfg, &ctx, &dir, l, changed, force, ovr_t.as_ref(), spot_meta.as_ref())?;
+        } else if self.info_state.read().enabled { *self.info_state.write() = crate::info::InfoState::default(); }
         let rot: Vec<Tagged> = dab.dls_rotation.iter().filter_map(|i| message(&cfg, &ctx, i)).collect();
-        let due = changed || force || l.dls_at.map(|t| t.elapsed() >= Duration::from_secs(dab.dls_interval_s.max(2) as u64)).unwrap_or(true);
+        let due = !info_on && (changed || force || l.dls_at.map(|t| t.elapsed() >= Duration::from_secs(dab.dls_interval_s.max(2) as u64)).unwrap_or(true));
         if due {
             let msg = match &ovr_t { Some(t) => t.clone(), None => { if !rot.is_empty() { l.dls_i %= rot.len(); } let m = rot.get(l.dls_i).cloned().unwrap_or_else(|| render(&cfg.meta.tpl_station, &ctx)); l.dls_i += 1; m } };
             let msg = limit(&msg, 128, 4);
             l.dls_at = Some(Instant::now());
             if dab.enabled {
-                let running = ctx.is_song;
-                let file = dls_file(&msg, l.toggle, running, dab.dl_plus);
-                if file != l.last_dls || force {
-                    write_atomic(&dir.join("dls.txt"), file.as_bytes())?;
-                    write_atomic(&dir.join("dls_plain.txt"), format!("{}\n", msg.text).as_bytes())?;
-                    for u in dab.http_push.iter().filter(|u| !u.trim().is_empty()) {
-                        let url = u.replace("{DLS_URLENC}", &urlencoding::encode(&msg.text)).replace("{DLS}", &msg.text);
-                        let r = if url.starts_with("POST ") { ureq::post(url[5..].trim()).timeout(Duration::from_secs(3)).send_string(&msg.text).map(|_| ()) } else { ureq::get(url.trim_start_matches("GET ").trim()).timeout(Duration::from_secs(3)).call().map(|_| ()) };
-                        if let Err(e) = r { log::warn!("DLS push {url}: {e}"); }
-                    }
-                    l.last_dls = file;
-                }
+                self.write_dls(&cfg, &dir, &msg, l.toggle, ctx.is_song, force, &mut l.last_dls)?;
             }
             let mut st = self.state.write();
             st.dls = msg; st.dls_index = l.dls_i;
         }
 
         // ---- MOT Slideshow
-        if dab.enabled && dab.sls_enabled {
+        if dab.enabled && dab.sls_enabled && !info_on {
             let sig = format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}", spot_meta.as_ref().map(|m| (&m.image_path, &m.dls_text)), cur.as_ref().map(|c| (&c.track.id, &c.track.title)), l.show.0.as_ref().map(|s| (s.grid_id, s.start)),
                 weather.as_ref().map(|w| (&w.updated, &w.text)), next.as_ref().map(|t| t.id), cfg.meta.logo_path, serde_json::to_string(&dab.sls_slides).unwrap_or_default());
             if sig != l.slide_sig || force {
@@ -458,8 +502,9 @@ impl MetaHub {
         let ascii = |s: &str| if rc.ascii { crate::rds::ascii(s) } else { s.to_string() };
         // RadioText
         let rt_rot: Vec<Tagged> = rc.rt_rotation.iter().filter_map(|i| message(&cfg, &ctx, i)).collect();
-        if changed || force || l.rt_at.map(|t| t.elapsed() >= Duration::from_secs(rc.rt_interval_s.max(4) as u64)).unwrap_or(true) {
-            let msg = match &ovr_t { Some(t) => t.clone(), None => { if !rt_rot.is_empty() { l.rt_i %= rt_rot.len(); } let m = rt_rot.get(l.rt_i).cloned().unwrap_or_default(); l.rt_i += 1; m } };
+        let follow = info_rt.is_some() && cfg.meta.info.rds_follow;
+        if (follow && (changed || force || info_rt.as_ref().map(|t| t.text != l.rt_text).unwrap_or(false))) || (!follow && (changed || force || l.rt_at.map(|t| t.elapsed() >= Duration::from_secs(rc.rt_interval_s.max(4) as u64)).unwrap_or(true))) {
+            let msg = match (&ovr_t, follow) { (Some(t), _) => t.clone(), (None, true) => info_rt.clone().unwrap_or_default(), (None, false) => { if !rt_rot.is_empty() { l.rt_i %= rt_rot.len(); } let m = rt_rot.get(l.rt_i).cloned().unwrap_or_default(); l.rt_i += 1; m } };
             let msg = limit(&Tagged { text: ascii(&msg.text), tags: msg.tags }, 64, 2);
             if msg.text != l.rt_text { l.rt_ab = !l.rt_ab; l.rt_text = msg.text.clone(); }
             l.rt_at = Some(Instant::now());
@@ -525,6 +570,97 @@ impl MetaHub {
             "dls": st.dls.text, "rds": { "ps": st.rds.ps, "rt": st.rds.rt, "pty": st.rds.pty },
             "updated": chrono::Local::now().to_rfc3339(),
         })
+    }
+
+    fn write_dls(&self, cfg: &Config, dir: &Path, msg: &Tagged, toggle: bool, running: bool, force: bool, last: &mut String) -> anyhow::Result<()> {
+        let dab = &cfg.meta.dab;
+        let file = dls_file(msg, toggle, running, dab.dl_plus);
+        if file != *last || force {
+            write_atomic(&dir.join("dls.txt"), file.as_bytes())?;
+            write_atomic(&dir.join("dls_plain.txt"), format!("{}\n", msg.text).as_bytes())?;
+            for u in dab.http_push.iter().filter(|u| !u.trim().is_empty()) {
+                let url = u.replace("{DLS_URLENC}", &urlencoding::encode(&msg.text)).replace("{DLS}", &msg.text);
+                let r = if url.starts_with("POST ") { ureq::post(url[5..].trim()).timeout(Duration::from_secs(3)).send_string(&msg.text).map(|_| ()) } else { ureq::get(url.trim_start_matches("GET ").trim()).timeout(Duration::from_secs(3)).call().map(|_| ()) };
+                if let Err(e) = r { log::warn!("DLS push {url}: {e}"); }
+            }
+            *last = file;
+        }
+        Ok(())
+    }
+
+    /// Jeden krok rotace sdělení. Vrací text aktuálního sdělení (pro RDS RadioText).
+    #[allow(clippy::too_many_arguments)]
+    fn info_tick(&self, cfg: &Config, ctx: &Ctx, dir: &Path, l: &mut Loop, changed: bool, force: bool, ovr: Option<&Tagged>, spot: Option<&crate::ads::SpotMeta>) -> anyhow::Result<Option<Tagged>> {
+        use crate::info;
+        let info_cfg = &cfg.meta.info;
+        let now = crate::automation::now_local(cfg);
+        let Some(pl) = info_cfg.playlist_at(chrono::Datelike::weekday(&now).number_from_monday(), chrono::Timelike::hour(&now)) else { return Ok(None) };
+        let skip = std::mem::take(&mut *self.info_skip.lock());
+        let pl_changed = pl.id != l.info_pl;
+        if pl_changed { l.info_pl = pl.id.clone(); l.info_frames.clear(); l.info_i = 0; l.info_until = None; }
+        let song_first = changed && ctx.is_song && info_cfg.song_first_s > 0;
+        let due = skip || force || song_first || l.info_until.map(|t| Instant::now() >= t).unwrap_or(true);
+        if !due { return Ok(self.info_state.read().current.as_ref().map(|f| f.dls.clone())); }
+        // nové sdělení
+        let frame = if song_first {
+            let src = info_cfg.sources.iter().find(|s| s.kind == "song" && s.enabled).cloned().unwrap_or_else(|| info::InfoSource { id: "__song".into(), name: "Právě hraje".into(), kind: "song".into(), ..Default::default() });
+            let t = info::source_texts(cfg, &src, ctx, &self.info).into_iter().next().map(|(_, t)| t).unwrap_or_default();
+            Some(info::Frame { source: src.id, source_name: src.name, kind: "song".into(), idx: 0, dls: limit(&t, 128, 4), hold_s: info_cfg.song_first_s, send_dls: true, send_slide: true })
+        } else {
+            let mut tries = 0;
+            loop {
+                if l.info_i >= l.info_frames.len() { l.info_frames = info::frames(cfg, pl, ctx, &self.info, &mut l.info_cursors); l.info_i = 0; tries += 1; }
+                if l.info_frames.is_empty() || tries > 2 { break None; }
+                let f = l.info_frames[l.info_i].clone();
+                l.info_i += 1;
+                // obsah se mohl změnit (skladba) – text přepočítat z aktuálního kontextu
+                if let Some(src) = info_cfg.source(&f.source) {
+                    let texts = info::source_texts(cfg, src, ctx, &self.info);
+                    let t = texts.iter().find(|(i, _)| *i == f.idx).map(|(_, t)| t.clone());
+                    match t { Some(t) => break Some(info::Frame { dls: limit(&t, 128, 4), ..f }), None if f.send_slide && matches!(src.kind.as_str(), "text" | "promo") => break Some(f), None => continue }
+                }
+            }
+        };
+        let Some(frame) = frame else { return Ok(None) };
+        l.info_until = Some(Instant::now() + Duration::from_secs(frame.hold_s as u64));
+        let dab = &cfg.meta.dab;
+        // text (DLS) – přednost má ruční přepis a reklamní spot
+        let dls = ovr.cloned().or_else(|| if frame.send_dls { Some(frame.dls.clone()) } else { None });
+        if let Some(msg) = &dls {
+            if dab.enabled { if ctx.is_song && song_first { l.toggle = !l.toggle; } self.write_dls(cfg, dir, msg, l.toggle, ctx.is_song, force, &mut l.last_dls)?; }
+            let mut st = self.state.write(); st.dls = msg.clone();
+        }
+        // slide
+        let mut slide_name = None;
+        if dab.enabled && dab.sls_enabled && (frame.send_slide || spot.is_some()) {
+            let logo = crate::slides::load_path(&cfg.meta.logo_path);
+            let footer = self.footer_text(cfg, ctx);
+            let c = self.common(cfg, logo.as_ref(), &footer);
+            let spot_img = spot.and_then(|m| crate::slides::load_path(&m.image_path));
+            let img = match &spot_img { Some(im) => Some(crate::slides::full(&c, im)), None => info::render_slide(cfg, &frame, ctx, &self.info, &c) };
+            if let Some(img) = img {
+                let sd = dir.join("slides");
+                std::fs::create_dir_all(&sd)?;
+                l.info_seq += 1;
+                let name = format!("info_{:06}.jpg", l.info_seq);
+                let bytes = crate::slides::encode_jpeg(&img, dab.sls_max_kb)?;
+                // ve složce jen aktuální slide (ODR-PadEnc ji prochází dokola)
+                for e in std::fs::read_dir(&sd)?.flatten() { let _ = std::fs::remove_file(e.path()); }
+                write_atomic(&sd.join(&name), &bytes)?;
+                let click = match (spot, info_cfg.source(&frame.source)) { (Some(m), _) if !m.url.is_empty() => m.url.clone(), (_, Some(s)) if !s.click_url.is_empty() => s.click_url.clone(), _ => cfg.meta.url.clone() };
+                if !click.is_empty() { let _ = write_atomic(&sd.join(format!("{name}.sls_params")), format!("ClickThroughURL={click}\n").as_bytes()); }
+                write_atomic(&dir.join("current.jpg"), &bytes)?;
+                let mut st = self.state.write();
+                st.slides = vec![SlideInfo { name: name.clone(), kind: frame.kind.clone(), bytes: bytes.len(), updated: chrono::Local::now().to_rfc3339() }];
+                st.current_slide = Some(name.clone());
+                slide_name = Some(name);
+            }
+        }
+        let mut is = self.info_state.write();
+        is.enabled = true; is.playlist = pl.id.clone(); is.playlist_name = pl.name.clone(); is.frames = l.info_frames.clone(); is.index = l.info_i.saturating_sub(1);
+        is.song_first = song_first; is.current = Some(frame.clone()); if slide_name.is_some() { is.slide = slide_name; }
+        is.until = Some((chrono::Local::now() + chrono::Duration::seconds(frame.hold_s as i64)).to_rfc3339());
+        Ok(dls)
     }
 
     fn render_slides(&self, cfg: &Config, ctx: &Ctx, dir: &Path, spot: Option<&crate::ads::SpotMeta>) -> anyhow::Result<Vec<SlideInfo>> {

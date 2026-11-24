@@ -308,6 +308,15 @@ const MIGRATIONS: &[&str] = &[
     UPDATE users SET perms = CASE WHEN perms IN ('', '[]') THEN '["publish"]' ELSE substr(perms, 1, length(perms) - 1) || ',"publish"]' END
         WHERE role = 'editor' AND perms NOT LIKE '%"publish"%';
     "#,
+    // v11 – platnost souborů (od–do, dny, hodiny) a informace o skladbě pro moderátora
+    r#"
+    ALTER TABLE tracks ADD COLUMN valid_from TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tracks ADD COLUMN valid_to TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tracks ADD COLUMN valid_days TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tracks ADD COLUMN valid_hours TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tracks ADD COLUMN presenter_notes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tracks ADD COLUMN notes_source TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 pub struct Db {
@@ -397,6 +406,12 @@ pub struct TrackPatch {
     pub outro_ms: Option<i64>,
     pub lyricist: Option<String>,
     pub label: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub valid_days: Option<String>,
+    pub valid_hours: Option<String>,
+    pub presenter_notes: Option<String>,
+    pub notes_source: Option<String>,
 }
 
 /// Rozliší chybějící pole (None) od explicitního null (Some(None)).
@@ -408,7 +423,7 @@ where D: serde::Deserializer<'de>, T: Deserialize<'de> {
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryCount { pub kind: String, pub category: String, pub count: i64 }
 
-pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked,bed_intro_ms,bed_outro_ms,bed_level_db,bed_fade_ms,outro_ms,lyricist,label";
+pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked,bed_intro_ms,bed_outro_ms,bed_level_db,bed_fade_ms,outro_ms,lyricist,label,valid_from,valid_to,valid_days,valid_hours,presenter_notes,notes_source";
 
 pub fn row_track(r: &Row) -> rusqlite::Result<Track> {
     let kind: String = r.get(1)?;
@@ -460,6 +475,12 @@ pub fn row_track(r: &Row) -> rusqlite::Result<Track> {
         outro_ms: r.get(44)?,
         lyricist: r.get(45)?,
         label: r.get(46)?,
+        valid_from: r.get(47)?,
+        valid_to: r.get(48)?,
+        valid_days: r.get(49)?,
+        valid_hours: r.get(50)?,
+        presenter_notes: r.get(51)?,
+        notes_source: r.get(52)?,
     })
 }
 
@@ -706,7 +727,7 @@ impl Db {
         set!(playlister_code, "playlister_code"); set!(isrc, "isrc"); set!(composer, "composer"); set!(publisher, "publisher");
         set!(cue_in_ms, "cue_in_ms"); set!(intro_ms, "intro_ms"); set!(mix_ms, "mix_ms"); set!(cue_out_ms, "cue_out_ms");
         set!(vocal, "vocal"); set!(properties, "properties"); set!(color, "color"); set!(comment, "comment");
-        set!(bed_intro_ms, "bed_intro_ms"); set!(bed_outro_ms, "bed_outro_ms"); set!(bed_level_db, "bed_level_db"); set!(bed_fade_ms, "bed_fade_ms"); set!(outro_ms, "outro_ms"); set!(lyricist, "lyricist"); set!(label, "label");
+        set!(bed_intro_ms, "bed_intro_ms"); set!(bed_outro_ms, "bed_outro_ms"); set!(bed_level_db, "bed_level_db"); set!(bed_fade_ms, "bed_fade_ms"); set!(outro_ms, "outro_ms"); set!(lyricist, "lyricist"); set!(label, "label"); set!(valid_from, "valid_from"); set!(valid_to, "valid_to"); set!(valid_days, "valid_days"); set!(valid_hours, "valid_hours"); set!(presenter_notes, "presenter_notes"); set!(notes_source, "notes_source");
         if let Some(sep) = &p.separation_min { tx.execute("UPDATE tracks SET separation_min=?2 WHERE id=?1", params![id, sep])?; }
         if let Some(b) = p.bookmarked { tx.execute("UPDATE tracks SET bookmarked=?2 WHERE id=?1", params![id, b as i64])?; }
         if let Some(e) = p.enabled { tx.execute("UPDATE tracks SET enabled=?2 WHERE id=?1", params![id, e as i64])?; }

@@ -428,7 +428,7 @@ pub fn select_track(db: &Db, cfg: &Config, it: &PlItem, excl: &HashSet<i64>) -> 
         }
         _ => {
             let step = crate::config::ClockStep { kind, category: cat.clone(), position: None, stitch: None };
-            let ex = Exclusions { track_ids: excl.clone(), artists: HashSet::new() };
+            let ex = Exclusions { track_ids: excl.clone(), artists: HashSet::new(), at: None };
             select(db, &cfg.auto, &step, "", &ex)?
         }
     };
@@ -728,11 +728,11 @@ pub fn generate_plan(db: &Db, cfg: &Config, date: NaiveDate, hours: &[u32], over
             } else {
                 let now_ms = h as i64 * 3_600_000 + t_ms;
                 let artists: HashSet<String> = artist_times.iter().filter(|(_, at)| now_ms - at < cfg.auto.artist_separation_min as i64 * 60_000).map(|(a, _)| a.clone()).collect();
-                let ex = Exclusions { track_ids: used.clone(), artists };
+                let ex = Exclusions { track_ids: used.clone(), artists, at: None };
                 let picked = match select(db, &cfg.auto, step, &clock.backup_category, &ex)? {
                     Some(x) => Some(x),
                     // málo souborů – povolit opakování (jako automatika při uvolnění separace)
-                    None => select(db, &cfg.auto, step, &clock.backup_category, &Exclusions { track_ids: HashSet::new(), artists: HashSet::new() })?,
+                    None => select(db, &cfg.auto, step, &clock.backup_category, &Exclusions { track_ids: HashSet::new(), artists: HashSet::new(), at: None })?,
                 };
                 let Some((t, _why)) = picked else { continue };
                 used.insert(t.id);

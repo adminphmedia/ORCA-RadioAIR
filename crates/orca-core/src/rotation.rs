@@ -19,6 +19,8 @@ pub fn clock_for<'a>(cfg: &'a Config, t: &DateTime<Local>) -> Option<&'a Clock> 
 pub struct Exclusions {
     pub track_ids: HashSet<i64>,
     pub artists: HashSet<String>,
+    /// Čas, pro který se vybírá (platnost souborů); None = teď
+    pub at: Option<chrono::NaiveDateTime>,
 }
 
 /// Vybere skladbu pro krok clocku. Vrací skladbu a zdůvodnění výběru.
@@ -32,6 +34,7 @@ pub fn select(db: &Db, auto: &AutoConfig, step: &ClockStep, backup_category: &st
     let pick = |cands: Vec<Track>, check_artist: bool| -> Option<Track> {
         let ok: Vec<Track> = cands.into_iter()
             .filter(|t| !excl.track_ids.contains(&t.id))
+            .filter(|t| t.valid_at(excl.at.unwrap_or_else(|| chrono::Local::now().naive_local())))
             .filter(|t| !check_artist || t.artist.is_empty() || !artists_recent.contains(&t.artist.to_lowercase()))
             .collect();
         if ok.is_empty() { return None; }

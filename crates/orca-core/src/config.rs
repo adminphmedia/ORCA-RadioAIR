@@ -27,6 +27,10 @@ pub struct Config {
     pub schedule: ScheduleConfig,
     pub relay: RelayConfig,
     pub meta: MetaConfig,
+    /// Mikrofon studia: vstup a přimíchání do programu
+    pub mic: crate::mic::MicConfig,
+    /// AI pro informace o skladbách (poskytovatel, model, styl)
+    pub ai: crate::ai::AiConfig,
     pub general: GeneralConfig,
     /// Vstupy z mixážního pultu a ovladačů (fader start, GPI, MIDI, TCP)
     pub gpio: GpioConfig,
@@ -95,6 +99,8 @@ impl Default for Config {
             schedule: ScheduleConfig::default(),
             relay: RelayConfig::default(),
             meta: MetaConfig::default(),
+            mic: crate::mic::MicConfig::default(),
+            ai: crate::ai::AiConfig::default(),
             general: GeneralConfig::default(),
             gpio: GpioConfig::default(),
         }
@@ -288,6 +294,10 @@ pub struct AutoConfig {
     pub start_in_auto: bool,
     /// Kolik položek držet ve frontě (Classic auto).
     pub min_queue: usize,
+    /// Mít ve frontě vždy načtenou celou další hodinu (jako Jazler) – vidíte, co se bude vysílat.
+    pub fill_next_hour: bool,
+    /// Doplňovat frontu i v ručním režimu (položky se nespouštějí samy, jen jsou připravené).
+    pub fill_in_manual: bool,
     /// Minimální rozestup stejného interpreta (min).
     pub artist_separation_min: u32,
     /// Minimální rozestup stejné skladby (min).
@@ -305,6 +315,8 @@ impl Default for AutoConfig {
         Self {
             start_in_auto: true,
             min_queue: 6,
+            fill_next_hour: true,
+            fill_in_manual: false,
             artist_separation_min: 45,
             song_separation_min: 180,
             randomness: 0,
@@ -488,6 +500,8 @@ pub struct LibraryConfig {
     pub category_folders: bool,
     /// Automatická složka (inbox): co se do ní nakopíruje, samo se zařadí do knihovny.
     pub inbox: InboxConfig,
+    /// Soubory po platnosti (ne hudbu) automaticky přesunout do koše knihovny po tolika dnech od konce platnosti; 0 = jen ručně
+    pub expired_cleanup_days: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,7 +532,7 @@ impl Default for LibraryConfig {
             on_duplicate: "rename".into(),
             data_in_station: true,
             category_folders: true,
-            inbox: InboxConfig::default(),
+            inbox: InboxConfig::default(), expired_cleanup_days: 0,
         }
     }
 }
@@ -791,6 +805,8 @@ pub struct MetaConfig {
     pub weather: WeatherConfig,
     pub rds: RdsConfig,
     pub dab: DabConfig,
+    /// Informace na displeji: sady, playlisty sdělení a rozvrh
+    pub info: crate::info::InfoConfig,
 }
 
 impl Default for MetaConfig {
@@ -806,7 +822,7 @@ impl Default for MetaConfig {
             tpl_other: String::new(),
             stream_song: "{ARTIST} - {TITLE}".into(),
             stream_other: "{STATION} – {SHOW}".into(),
-            weather: WeatherConfig::default(), rds: RdsConfig::default(), dab: DabConfig::default(),
+            weather: WeatherConfig::default(), rds: RdsConfig::default(), dab: DabConfig::default(), info: crate::info::InfoConfig::default(),
         }
     }
 }

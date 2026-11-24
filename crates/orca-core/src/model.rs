@@ -147,13 +147,68 @@ pub struct Track {
     /// Značka výrobce / label nahrávky (OSA, INTERGRAM).
     #[serde(default)]
     pub label: String,
+    /// Platnost (ne u hudby): od kdy se smí zařazovat – „RRRR-MM-DD“ nebo „RRRR-MM-DDTHH:MM“, prázdné = ihned
+    #[serde(default)]
+    pub valid_from: String,
+    /// Platnost do (včetně celého dne, pokud bez času); prázdné = bez konce
+    #[serde(default)]
+    pub valid_to: String,
+    /// Dny v týdnu (číslice 1 = Po … 7 = Ne, např. „3“ jen středa); prázdné = každý den
+    #[serde(default)]
+    pub valid_days: String,
+    /// Časové okno „HH:MM-HH:MM“ (i přes půlnoc); prázdné = celý den
+    #[serde(default)]
+    pub valid_hours: String,
+    /// Informace o skladbě pro moderátora (zajímavosti, tipy) – zobrazí se ve studiu
+    #[serde(default)]
+    pub presenter_notes: String,
+    /// Původ textu pro moderátora: manual | ai:<model> <datum>
+    #[serde(default)]
+    pub notes_source: String,
 }
+
+/// Stav platnosti souboru v daném okamžiku.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Validity { Valid, NotYet, Expired, OtherDay, OtherTime }
+
+fn parse_valid(s: &str, end: bool) -> Option<chrono::NaiveDateTime> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M") { return Some(d); }
+    if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M") { return Some(d); }
+    chrono::NaiveDate::parse_from_str(&s[..s.len().min(10)], "%Y-%m-%d").ok().map(|d| if end { d.and_hms_opt(23, 59, 59).unwrap() } else { d.and_hms_opt(0, 0, 0).unwrap() })
+}
+
+fn parse_hm(s: &str) -> Option<u32> { let (h, m) = s.trim().split_once(':')?; Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?) }
+
 fn d_bed_intro() -> i64 { 3000 }
 fn d_bed_outro() -> i64 { 3000 }
 fn d_bed_level() -> f64 { -10.0 }
 fn d_bed_fade() -> i64 { 1500 }
 
 impl Track {
+    /// Platí soubor v daném okamžiku? Hudba (skladby) platnost nemá – vždy platí.
+    pub fn validity_at(&self, t: chrono::NaiveDateTime) -> Validity {
+        use chrono::{Datelike, Timelike};
+        if self.kind() == TrackKind::Song { return Validity::Valid; }
+        if let Some(f) = parse_valid(&self.valid_from, false) { if t < f { return Validity::NotYet; } }
+        if let Some(e) = parse_valid(&self.valid_to, true) { if t > e { return Validity::Expired; } }
+        let days = self.valid_days.trim();
+        if !days.is_empty() && !days.contains(char::from_digit(t.weekday().number_from_monday(), 10).unwrap_or('0')) { return Validity::OtherDay; }
+        if let Some((a, b)) = self.valid_hours.split_once('-') {
+            if let (Some(a), Some(b)) = (parse_hm(a), parse_hm(b)) {
+                let m = t.hour() * 60 + t.minute();
+                let inside = if a <= b { m >= a && m < b } else { m >= a || m < b };
+                if !inside { return Validity::OtherTime; }
+            }
+        }
+        Validity::Valid
+    }
+    pub fn valid_at(&self, t: chrono::NaiveDateTime) -> bool { self.validity_at(t) == Validity::Valid }
+    /// Platnost skončila (už nikdy nebude platit).
+    pub fn expired(&self, t: chrono::NaiveDateTime) -> bool { self.validity_at(t) == Validity::Expired }
+
     pub fn kind(&self) -> TrackKind { self.kind.unwrap_or(TrackKind::Song) }
 
     pub fn display(&self) -> String {
@@ -283,4 +338,23 @@ pub struct LogEntry {
     pub played_ms: Option<i64>,
     pub source: String,
     pub reason: String,
+}
+
+#[cfg(test)]
+mod validity_tests {
+    use super::*;
+    #[test]
+    fn validity() {
+        let d = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        let mut t = Track { kind: Some(TrackKind::Jingle), valid_from: "2026-12-01".into(), valid_to: "2026-12-24".into(), valid_days: "3".into(), valid_hours: "06:00-10:00".into(), ..Default::default() };
+        assert_eq!(t.validity_at(d("2026-11-30 08:00")), Validity::NotYet);
+        assert_eq!(t.validity_at(d("2026-12-02 08:00")), Validity::Valid, "středa 2. 12. ráno");
+        assert_eq!(t.validity_at(d("2026-12-03 08:00")), Validity::OtherDay);
+        assert_eq!(t.validity_at(d("2026-12-02 11:00")), Validity::OtherTime);
+        assert_eq!(t.validity_at(d("2026-12-25 08:00")), Validity::Expired);
+        t.valid_hours = "22:00-02:00".into(); t.valid_days.clear();
+        assert!(t.valid_at(d("2026-12-05 23:30")) && t.valid_at(d("2026-12-05 01:00")) && !t.valid_at(d("2026-12-05 12:00")));
+        t.kind = Some(TrackKind::Song);
+        assert!(t.valid_at(d("2030-01-01 12:00")), "hudba platnost nemá");
+    }
 }

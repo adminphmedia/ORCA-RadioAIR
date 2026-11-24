@@ -9,7 +9,7 @@ use crate::events::{Event, EventBus};
 use crate::model::{QueueItem, Track};
 use crate::nowplaying::{public_text, NowPlayingWriter};
 use crate::rotation::{clock_for, grid_key, select, Exclusions};
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Timelike};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -20,6 +20,20 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode { Auto, Manual }
+
+/// Položka náhledu hodiny (není ve frontě).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PreviewItem {
+    pub time: Option<String>,
+    pub kind: String,
+    pub artist: String,
+    pub title: String,
+    pub category: String,
+    pub duration_ms: i64,
+    pub track_id: Option<i64>,
+    /// selector | clock:<název>
+    pub source: String,
+}
 
 pub struct Automation {
     db: Arc<Db>,
@@ -59,6 +73,66 @@ impl Automation {
     pub fn set_mode(&self, m: Mode) {
         *self.mode.write() = m;
         self.events.emit(Event::ModeChanged { mode: match m { Mode::Auto => "auto", Mode::Manual => "manual" }.into() });
+    }
+
+    /// Náhled hodiny začínající v `at` bez zařazení do fronty (ruční režim: „co by se hrálo“).
+    /// Z publikovaného plánu Music Selectoru konkrétní skladby, jinak kroky hodinového schématu.
+    pub fn preview_hour(&self, at: DateTime<Local>) -> Vec<PreviewItem> {
+        let cfg = self.cfg.read().clone();
+        let mut out = vec![];
+        if crate::selector::load_config(&self.db).map(|c| c.data.mode == "active").unwrap_or(false) {
+            let day = at.format("%Y-%m-%d").to_string();
+            if let Ok(Some(log)) = crate::selector::logs::published(&self.db, &day) {
+                if let Ok(plan) = crate::selector::logs::load_plan(&self.db, log.id) {
+                    if let Some(h) = plan.hours.iter().find(|h| h.spec.hour == at.hour()) {
+                        for it in &h.items {
+                            let tr = it.track_id.and_then(|id| self.db.get_track(id).ok().flatten());
+                            out.push(PreviewItem {
+                                time: it.est_start.map(|d| d.with_timezone(&Local).format("%H:%M:%S").to_string()),
+                                kind: tr.as_ref().map(|t| t.kind().as_str().to_string()).unwrap_or_else(|| it.slot.kind.clone()),
+                                artist: tr.as_ref().map(|t| t.artist.clone()).unwrap_or_default(),
+                                title: tr.as_ref().map(|t| t.title.clone()).unwrap_or_else(|| it.slot.label.clone()),
+                                category: tr.as_ref().map(|t| t.category.clone()).unwrap_or_else(|| it.slot.category.clone()),
+                                duration_ms: if it.length_ms > 0 { it.length_ms } else { tr.as_ref().map(|t| t.duration_ms).unwrap_or(0) },
+                                track_id: it.track_id, source: "selector".into(),
+                            });
+                        }
+                        return out;
+                    }
+                }
+            }
+        }
+        // nanečisto projde kroky clocku a vybere skladby (bez zápisu do fronty a historie), dokud nenaplní hodinu
+        let Some(clock) = clock_for(&cfg, &at) else { return out };
+        if clock.steps.is_empty() { return out; }
+        let end = at + chrono::Duration::hours(1);
+        let mut t = at;
+        let mut excl = Exclusions { track_ids: HashSet::new(), artists: HashSet::new(), at: Some(at.naive_local()) };
+        for it in self.engine.queue_snapshot() { excl.track_ids.insert(it.track.id); }
+        let mut misses = 0;
+        for i in 0..200 {
+            if t >= end || misses >= clock.steps.len() { break; }
+            let step = &clock.steps[i % clock.steps.len()];
+            let src = format!("clock:{}", clock.name);
+            if let Some(kind) = &step.stitch {
+                out.push(PreviewItem { time: Some(t.format("%H:%M:%S").to_string()), kind: "stitch".into(), artist: String::new(), title: kind.clone(), category: String::new(), duration_ms: 0, track_id: None, source: src });
+                continue;
+            }
+            excl.at = Some(t.naive_local());
+            match select(&self.db, &cfg.auto, step, &clock.backup_category, &excl) {
+                Ok(Some((tr, _))) => {
+                    misses = 0;
+                    excl.track_ids.insert(tr.id);
+                    if !tr.artist.is_empty() && tr.kind() == crate::model::TrackKind::Song { excl.artists.insert(tr.artist.to_lowercase()); }
+                    let len = (tr.mix_ms.max(tr.cue_in_ms) - tr.cue_in_ms).max(0);
+                    let len = if len > 0 { len } else { tr.duration_ms };
+                    out.push(PreviewItem { time: Some(t.format("%H:%M:%S").to_string()), kind: tr.kind().as_str().to_string(), artist: tr.artist.clone(), title: tr.title.clone(), category: tr.category.clone(), duration_ms: tr.duration_ms, track_id: Some(tr.id), source: src });
+                    t += chrono::Duration::milliseconds(len.max(1000));
+                }
+                _ => { misses += 1; }
+            }
+        }
+        out
     }
 
     /// Fronta s odhadovanými časy začátku.
@@ -339,12 +413,23 @@ impl Automation {
     }
 
     fn fill_queue(&self) {
-        if self.mode() != Mode::Auto { return; }
         let cfg = self.cfg.read().clone();
+        if self.mode() != Mode::Auto && !cfg.auto.fill_in_manual { return; }
+        // cíl: aspoň min_queue položek a (volitelně) celá další hodina – konec další hodiny od teď
+        let horizon = {
+            let n = now_local(&cfg);
+            let top = n.with_minute(0).and_then(|d| d.with_second(0)).and_then(|d| d.with_nanosecond(0)).unwrap_or(n);
+            top + chrono::Duration::hours(2)
+        };
         let mut guard = 0;
-        while self.engine.queue.lock().len() < cfg.auto.min_queue && guard < cfg.auto.min_queue * 3 {
-            guard += 1;
+        let max_steps = cfg.auto.min_queue * 3 + if cfg.auto.fill_next_hour { 120 } else { 0 };
+        loop {
+            if guard >= max_steps { break; }
             let q = self.queue_with_eta();
+            let short = q.len() < cfg.auto.min_queue;
+            let need_hour = cfg.auto.fill_next_hour && self.queue_end(&q, &cfg) < horizon;
+            if !short && !need_hour { break; }
+            guard += 1;
             // čas, kdy začne nově přidaná položka → podle něj vybereme clock
             let slot_time = if q.is_empty() { now_local(&cfg) } else { self.queue_end(&q, &cfg) };
             if cfg.schedule.use_plan {
@@ -369,7 +454,7 @@ impl Automation {
                 match crate::selector::logs::take_next(&self.db, slot_time) {
                     Ok(Some(crate::selector::logs::Next::Track { item_id, track_id, slot, reason })) => {
                         if let Ok(Some(track)) = self.db.get_track(track_id) {
-                            if !track.missing {
+                            if !track.missing && track.valid_at(slot_time.naive_local()) {
                                 let mut item = QueueItem::new(track, "selector", reason);
                                 item.plan_item = Some(item_id);
                                 if slot.kind == "imaging" { item.position = slot.position.clone(); }
@@ -405,7 +490,7 @@ impl Automation {
                 }
                 continue;
             }
-            let mut excl = Exclusions { track_ids: HashSet::new(), artists: HashSet::new() };
+            let mut excl = Exclusions { track_ids: HashSet::new(), artists: HashSet::new(), at: Some(slot_time.naive_local()) };
             for it in &q { excl.track_ids.insert(it.track.id); if !it.track.artist.is_empty() && it.track.kind() == crate::model::TrackKind::Song { excl.artists.insert(it.track.artist.to_lowercase()); } }
             if let Some(cur) = self.engine.snapshot().current { excl.track_ids.insert(cur.item.track.id); if !cur.item.track.artist.is_empty() { excl.artists.insert(cur.item.track.artist.to_lowercase()); } }
             match select(&self.db, &cfg.auto, step, &clock.backup_category, &excl) {

@@ -285,6 +285,99 @@ pub fn station(c: &Common, slogan: &str, url: &str) -> RgbImage {
     img
 }
 
+/// Textová karta: nadpis + text (+ obrázek vlevo).
+pub fn card(c: &Common, image: Option<&DynamicImage>, label: &str, text: &str, meta: &str) -> RgbImage {
+    let (w, h) = (c.w, c.h);
+    let mut img = background(w, h, c.brand);
+    let body_h = h - (h as f32 * 0.17) as u32;
+    let mut x = 14.0;
+    if let Some(im) = image { let side = (body_h as f32 * 0.8) as u32; let ci = cover_fit(im, side, side); let pad = (body_h - side) / 2; paste(&mut img, &ci, pad, pad); x = (pad * 2 + side) as f32; }
+    let tw = w as f32 - x - 12.0;
+    let mut y = h as f32 * 0.08;
+    if !label.is_empty() { y = draw_block(&mut img, true, h as f32 * 0.065, x, y, tw, 1, Rgb([250, 204, 21]), label) + 4.0; }
+    y = draw_block(&mut img, true, h as f32 * 0.085, x, y, tw, 5, Rgb([255, 255, 255]), text) + 4.0;
+    if !meta.is_empty() { draw_block(&mut img, false, h as f32 * 0.058, x, y, tw, 2, Rgb([210, 222, 240]), meta); }
+    footer(&mut img, c);
+    img
+}
+
+/// Hodiny / datum.
+pub fn clock(c: &Common, time: &str, date: &str, label: &str) -> RgbImage {
+    let (w, h) = (c.w, c.h);
+    let mut img = background(w, h, c.brand);
+    draw_centered(&mut img, false, h as f32 * 0.07, h as f32 * 0.08, Rgb([210, 222, 240]), label);
+    draw_centered(&mut img, true, h as f32 * 0.3, h as f32 * 0.2, Rgb([255, 255, 255]), time);
+    draw_centered(&mut img, false, h as f32 * 0.085, h as f32 * 0.56, Rgb([250, 204, 21]), date);
+    footer(&mut img, c);
+    img
+}
+
+/// Zpráva: fotka nahoře, nadpis zprávy pod ní (bez fotky velký nadpis a perex).
+pub fn headline(c: &Common, photo: Option<&DynamicImage>, label: &str, title: &str, summary: &str) -> RgbImage {
+    let (w, h) = (c.w, c.h);
+    let mut img = background(w, h, c.brand);
+    let body_h = h - (h as f32 * 0.17) as u32;
+    match photo {
+        Some(p) => {
+            let ph = (body_h as f32 * 0.5) as u32;
+            let pi = cover_fit(p, w, ph);
+            paste(&mut img, &pi, 0, 0);
+            // štítek přes fotku
+            let px = h as f32 * 0.055;
+            let f = font(true);
+            let lw = text_width(&f, px, label) + 12.0;
+            fill(&mut img, 0, 0, lw as u32, (px * 1.5) as u32, mix(c.brand, Rgb([220, 38, 38]), 0.85));
+            draw_line(&mut img, &f, px, 6.0, px * 0.2, Rgb([255, 255, 255]), label);
+            draw_block(&mut img, true, h as f32 * 0.072, 10.0, ph as f32 + 6.0, w as f32 - 20.0, 3, Rgb([255, 255, 255]), title);
+        }
+        None => {
+            let mut y = h as f32 * 0.07;
+            y = draw_block(&mut img, true, h as f32 * 0.062, 14.0, y, w as f32 - 28.0, 1, Rgb([248, 113, 113]), label) + 4.0;
+            y = draw_block(&mut img, true, h as f32 * 0.09, 14.0, y, w as f32 - 28.0, 3, Rgb([255, 255, 255]), title) + 4.0;
+            draw_block(&mut img, false, h as f32 * 0.06, 14.0, y, w as f32 - 28.0, 3, Rgb([215, 225, 240]), summary);
+        }
+    }
+    footer(&mut img, c);
+    img
+}
+
+/// Webkamera: obrázek přes celou plochu, dole pruh s lokalitou a počasím.
+pub fn webcam(c: &Common, photo: Option<&DynamicImage>, place: &str, line: &str) -> RgbImage {
+    let (w, h) = (c.w, c.h);
+    let body_h = h - (h as f32 * 0.17) as u32;
+    let mut img = background(w, h, c.brand);
+    if let Some(p) = photo { let pi = cover_fit(p, w, body_h); paste(&mut img, &pi, 0, 0); }
+    let bh = (h as f32 * 0.22) as u32;
+    let y0 = body_h - bh;
+    for yy in y0..body_h { for xx in 0..w { let p = *img.get_pixel(xx, yy); img.put_pixel(xx, yy, mix(p, Rgb([0, 0, 0]), 0.62)); } }
+    let y = draw_block(&mut img, true, h as f32 * 0.07, 10.0, y0 as f32 + 3.0, w as f32 - 20.0, 1, Rgb([255, 255, 255]), place);
+    draw_block(&mut img, false, h as f32 * 0.055, 10.0, y, w as f32 - 20.0, 1, Rgb([250, 204, 21]), line);
+    footer(&mut img, c);
+    img
+}
+
+/// Promo / reklama: velké logo (např. streamovací platforma) a text pod ním.
+pub fn promo(c: &Common, logo: Option<&DynamicImage>, label: &str, text: &str) -> RgbImage {
+    let (w, h) = (c.w, c.h);
+    let mut img = background(w, h, c.brand);
+    let body_h = h - (h as f32 * 0.17) as u32;
+    let mut y = h as f32 * 0.06;
+    if !label.is_empty() { draw_centered(&mut img, true, h as f32 * 0.065, y, Rgb([250, 204, 21]), label); y += h as f32 * 0.1; }
+    let text_h = if text.is_empty() { 0.0 } else { h as f32 * 0.22 };
+    if let Some(l) = logo {
+        let avail = (body_h as f32 - y - text_h - 6.0).max(30.0) as u32;
+        // světlá podložka pod logo, aby bylo čitelné i tmavé logo
+        let li = contain(l, (w as f32 * 0.8) as u32, avail);
+        let (bx, by) = ((w - li.width()) / 2, y as u32 + (avail - li.height()) / 2);
+        fill(&mut img, bx.saturating_sub(6), by.saturating_sub(6), li.width() + 12, li.height() + 12, Rgb([248, 250, 252]));
+        paste(&mut img, &li, bx, by);
+        y += avail as f32 + 6.0;
+    }
+    if !text.is_empty() { draw_centered(&mut img, true, h as f32 * 0.075, y, Rgb([255, 255, 255]), text); }
+    footer(&mut img, c);
+    img
+}
+
 /// Celoplošný obrázek (reklama): vložený do rozměru slidu bez textů, okraje v barvě stanice.
 pub fn full(c: &Common, src: &DynamicImage) -> RgbImage {
     let mut canvas = RgbImage::from_pixel(c.w, c.h, mix(c.brand, Rgb([0, 0, 0]), 0.4));

@@ -71,6 +71,8 @@ pub fn routes() -> Router<St> {
         .route("/stitcher/preview", get(stitch_preview))
         // studio – nahrávání
         .route("/record/devices", get(rec_devices))
+        .route("/mic/devices", get(rec_devices))
+        .route("/mic/status", get(mic_status))
         .route("/record/status", get(rec_status))
         .route("/record/start", post(rec_start))
         .route("/record/stop", post(rec_stop))
@@ -596,6 +598,7 @@ async fn stitch_preview(State(o): State<St>, Query(q): Query<StitchQ>) -> ApiRes
 // ---------------------------------------------------------------------------------------------
 // Studio – nahrávání moderátorských vstupů
 
+async fn mic_status() -> ApiResult { Ok(Json(orca_core::mic::status()).into_response()) }
 async fn rec_devices() -> ApiResult {
     Ok(Json(tokio::task::spawn_blocking(orca_core::recorder::list_input_devices).await?).into_response())
 }

@@ -1,6 +1,7 @@
 //! ORCA RadioAIR – jádro odbavovacího systému pro rádio.
 
 pub mod ads;
+pub mod ai;
 pub mod analysis;
 pub mod audio_out;
 pub mod automation;
@@ -16,8 +17,10 @@ pub mod epg;
 pub mod events;
 pub mod library;
 pub mod meta;
+pub mod mic;
 pub mod general;
 pub mod import;
+pub mod info;
 pub mod station;
 pub mod gpio;
 pub mod model;
@@ -107,6 +110,19 @@ impl Orca {
         if cfg.read().general.keep_awake { general::keep_awake(); }
         let gpio = gpio::Gpio::start(cfg.clone(), engine.clone(), automation.clone());
         let inbox = station::Inbox::start(cfg.clone(), library.clone(), db.clone(), data_dir.to_path_buf());
+        { let e = engine.clone(); mic::start(cfg.clone(), Arc::new(move || e.rate.load(std::sync::atomic::Ordering::Relaxed))); }
+        {
+            // automatický úklid souborů po platnosti (jednou za hodinu)
+            let (c, lib, ev) = (cfg.clone(), library.clone(), events.clone());
+            std::thread::Builder::new().name("orca-expired".into()).spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(120));
+                let days = c.read().library.expired_cleanup_days;
+                if days > 0 {
+                    match lib.delete_expired(None, days) { Ok(n) if n > 0 => ev.alert("info", "expired_cleanup", format!("Úklid knihovny: {n} souborů po platnosti přesunuto do koše")), Err(e) => log::warn!("úklid po platnosti: {e}"), _ => {} }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(3480));
+            }).ok();
+        }
         encoders.autostart();
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
         Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox }))

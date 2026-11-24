@@ -1,4 +1,22 @@
-# ORCA RadioAIR 0.6.0 – testovací verze
+# ORCA RadioAIR 0.7.0 – testovací verze
+
+## Novinky v 0.7.0
+- **Výběr mikrofonu ve studiu** – kolečko vedle MIC: „Přes mixážní pult“ (jen ztlumí hudbu) nebo „Přes počítač“ (USB mikrofon / zvuková karta, ORCA mikrofon přimíchá do vysílání); výběr vstupu, kanálu, zesílení, šumové brány a živý měřák. Odpojený vstup se po připojení sám napojí.
+- **Fronta vždy s celou další hodinou** (jako Jazler) – v AUTO je ve frontě připravená i příští hodina, oddělená pruhem „23:00 další hodina · počet · délka“. V RUČNĚ je pod frontou náhled další hodiny (doplňování v ručním režimu volitelně v Pravidlech automatiky).
+- **Informace na displeji rádia** – playlisty sdělení pro DAB+ (text i obrázek současně) a RDS: skladba, další skladba, pořad, další pořad, stanice, kontakt, datum a čas, počasí, počasí pro vybrané lokality, zprávy z RSS/Atom s fotkou, snímek webkamery s popisem a počasím, promo/reklama s logem a odkazem (ClickThroughURL), vlastní text. Rozvrh dny × hodiny, živý náhled displeje a přeskočení sdělení.
+- **Informace pro moderátora ke skladbě** – text u skladby, ikona žárovky ve frontě a knihovně, automaticky ve studiu při hraní (zvětšení pro čtení).
+- **AI texty pro moderátory** – Claude (s ověřováním fakt na webu), ChatGPT, Ollama v počítači nebo služba s OpenAI API; předvolby podle stylu stanice, vlastní pokyny, pravidla přesnosti „nic nevymýšlej“; generování u skladby, pro vybrané skladby nebo hromadně na pozadí. Klíč zůstává jen v tomto počítači.
+- **Platnost souborů** (ne hudba) – od–do, dny v týdnu, časové okno; mimo platnost je automatika, Music Selector ani clocky nezařadí. Štítek stavu v knihovně, okno **Po platnosti** se smazáním vybraných/všech a automatický úklid po N dnech.
+- **Sloupce knihovny** – pořadí přetažením záhlaví, šířka tažením okraje (dvojklik = výchozí), zobrazení/skrytí sloupců (Album, Rok, Přidáno, Platnost…); pamatuje se pro každou záložku.
+- Manuál: nové články (mikrofon, další hodina, informace na displeji, informace pro moderátora, nastavení AI, platnost, sloupce) a nápověda sekcí.
+
+### Test 0.7.0
+1. Studio → kolečko u MIC → Přes počítač → vyberte vstup, mluvte (měřák), MIC zapne mikrofon i ztlumení hudby.
+2. AUTO: ve frontě je pruh další hodiny; RUČNĚ: pod frontou náhled další hodiny.
+3. Ovládací panel → Informace na displeji → zapnout, přidat informační sadu (počasí pro lokality, RSS, promo) → zařadit do playlistu → živý náhled; ve složce DAB je jen aktuální slide.
+4. Informace o skladbách (AI) → služba, klíč, Načíst modely → Uložit → u skladby Vygenerovat pomocí AI → ověřte text → ve studiu se ukáže při hraní.
+5. Jingle → Platnost: jen středa 6–9 → štítek „dnes ne“; platnost do včera → Po platnosti → Smazat vše.
+6. Knihovna → přetáhněte záhlaví a okraj sloupce → po obnovení stránky zůstane.
 
 ## Novinky v 0.6.0
 - **Automatická analýza BPM a energie** – Atributy skladeb → Analyzovat BPM a energii: tempo a energie 1–5 z poslechu souboru, na pozadí, ruční a importované hodnoty se nepřepíší.

@@ -309,11 +309,11 @@ where f32: cpal::FromSample<T> {
 }
 
 /// Jednoduchý lineární převzorkovač (vstup zvukové karty → vzorkovací frekvence enginu).
-struct Resampler { ratio: f64, pos: f64, last: [f32; 2] }
+pub(crate) struct Resampler { ratio: f64, pos: f64, last: [f32; 2] }
 
 impl Resampler {
-    fn new(inr: u32, outr: u32) -> Self { Self { ratio: inr as f64 / outr as f64, pos: 0.0, last: [0.0; 2] } }
-    fn process(&mut self, input: &[f32]) -> Vec<f32> {
+    pub(crate) fn new(inr: u32, outr: u32) -> Self { Self { ratio: inr as f64 / outr as f64, pos: 0.0, last: [0.0; 2] } }
+    pub(crate) fn process(&mut self, input: &[f32]) -> Vec<f32> {
         if (self.ratio - 1.0).abs() < 1e-9 { return input.to_vec(); }
         let frames = input.len() / 2;
         let mut out = Vec::with_capacity((frames as f64 / self.ratio) as usize * 2 + 4);
