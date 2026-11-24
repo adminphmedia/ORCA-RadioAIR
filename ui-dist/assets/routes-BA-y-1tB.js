@@ -1,0 +1,2 @@
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/OrcaApp-CLLDd5vU.js","assets/index-BqvPSFrJ.js"])))=>i.map(i=>d[i]);
+import{C as e,E as t,b as n,t as r,x as i}from"./index-BqvPSFrJ.js";var a=t(e()),o=i(),s=(0,a.lazy)(()=>r(()=>import(`./OrcaApp-CLLDd5vU.js`),__vite__mapDeps([0,1])));function c(){return(0,o.jsx)(n,{fallback:(0,o.jsx)(`div`,{className:`h-screen bg-background`}),children:(0,o.jsx)(a.Suspense,{fallback:(0,o.jsx)(`div`,{className:`h-screen bg-background`}),children:(0,o.jsx)(s,{})})})}export{c as component};

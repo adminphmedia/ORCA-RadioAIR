@@ -1,3 +1,11 @@
+# ORCA RadioAIR 0.7.3 – testovací verze
+
+## Novinky v 0.7.3
+- **Video → zvuk** (Ovládací panel → Knihovny): videa (MP4, MOV, MKV, WEBM, AVI…) se přetáhnou do ORCA nebo zkopírují do složky Video a převedou na zvuk pro vysílání – do knihovny (typ + kategorie) nebo do vlastní složky, FLAC / WAV / MP3 320. Převod ručně tlačítkem nebo automaticky; video po převodu ponechat, smazat hned nebo po N dnech; hromadné mazání převedených videí.
+- **Příprava zvuku z videa:** oříznutí ticha, sjednocení hlasitosti na cílové LUFS (EBU R128, −16 LUFS výchozí), volitelně úprava řeči. Vysílací processing se do souboru nedělá – běží až na výstupu (jinak by se zvuk zpracoval dvakrát).
+- **Úložiště** (Ovládací panel → Systém): kolik místa zabírá ORCA na disku – pruh disku (ORCA / ostatní / volno), graf a seznam částí (skladby, reklamy, jingly… s kategoriemi, videa, koš, zálohy, databáze, cache), upozornění při nedostatku místa, smazání převedených videí a vysypání koše.
+- YouTube odkazy ORCA nepřehrává ani nestahuje (nespolehlivé pro vysílání, podmínky YouTube); vlastní videa stáhnete v YouTube Studiu a vložíte do Video → zvuk.
+
 # ORCA RadioAIR 0.7.2 – testovací verze
 
 ## Novinky v 0.7.2

@@ -31,6 +31,7 @@ pub struct Config {
     pub mic: crate::mic::MicConfig,
     /// AI pro informace o skladbách (poskytovatel, model, styl)
     pub ai: crate::ai::AiConfig,
+    pub video: crate::video::VideoConfig,
     pub general: GeneralConfig,
     /// Vstupy z mixážního pultu a ovladačů (fader start, GPI, MIDI, TCP)
     pub gpio: GpioConfig,
@@ -101,6 +102,7 @@ impl Default for Config {
             meta: MetaConfig::default(),
             mic: crate::mic::MicConfig::default(),
             ai: crate::ai::AiConfig::default(),
+            video: crate::video::VideoConfig::default(),
             general: GeneralConfig::default(),
             gpio: GpioConfig::default(),
         }

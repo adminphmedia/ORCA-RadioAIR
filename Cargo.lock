@@ -1410,6 +1410,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs4"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8640e34b88f7652208ce9e88b1a37a2ae95227d84abec377ccd3c5cfeb141ed4"
+dependencies = [
+ "rustix",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3402,7 +3412,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orca-core"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -3414,6 +3424,7 @@ dependencies = [
  "dirs 7.0.0",
  "ebur128",
  "encoding_rs",
+ "fs4",
  "hound",
  "image",
  "lettre",
@@ -3443,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "orca-desktop"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -3463,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "orca-server"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "axum",

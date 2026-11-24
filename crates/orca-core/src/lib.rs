@@ -38,6 +38,8 @@ pub mod slides;
 pub mod spots;
 pub mod stitcher;
 pub mod users;
+pub mod video;
+pub mod storage;
 pub mod weather;
 
 use anyhow::Result;
@@ -80,6 +82,8 @@ pub struct Orca {
     pub monitor: monitor::Monitor,
     pub gpio: Arc<gpio::Gpio>,
     pub inbox: Arc<station::Inbox>,
+    pub video: Arc<video::VideoManager>,
+    pub storage: storage::Storage,
     pub update_hook: RwLock<Option<update::UpdateHook>>,
     pub update_state: Arc<parking_lot::Mutex<update::UpdateState>>,
 }
@@ -129,12 +133,13 @@ impl Orca {
                 std::thread::sleep(std::time::Duration::from_secs(3480));
             }).ok();
         }
+        let video = video::VideoManager::start(cfg.clone(), data_dir.to_path_buf(), library.clone(), events.clone());
         encoders.autostart();
         update::mark_version(data_dir);
         if let Some(v) = &updated_from { events.alert("info", "updated", format!("ORCA RadioAIR aktualizována z verze {v} na {VERSION}. Nastavení, knihovna i plány zůstaly zachované.")); }
         let update_state = Arc::new(parking_lot::Mutex::new(update::UpdateState { current: VERSION.into(), updated_from, pre_update_backup, ..Default::default() }));
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, update_hook: RwLock::new(None), update_state }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, video, storage: storage::Storage::default(), update_hook: RwLock::new(None), update_state }))
     }
 
     /// Zjistí, zda je k dispozici nová verze (jen v desktopové aplikaci).

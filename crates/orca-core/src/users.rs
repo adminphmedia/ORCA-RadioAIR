@@ -160,7 +160,7 @@ pub fn required_perm(method: &str, path: &str) -> Option<&'static str> {
     if p.starts_with("/session") || p.starts_with("/manual") || p.starts_with("/ui/") { return None; }
     if !write { return None; }
     if pick(&["/transport", "/gpio", "/queue", "/instants", "/pads", "/mode", "/monitor", "/memos", "/record"]) { return Some("studio"); }
-    if pick(&["/tracks", "/library", "/categories", "/upload", "/analyze", "/stitch", "/ai/track-notes", "/ai/batch"]) { return Some("library"); }
+    if pick(&["/tracks", "/library", "/categories", "/upload", "/analyze", "/stitch", "/ai/track-notes", "/ai/batch", "/video"]) { return Some("library"); }
     if pick(&["/spots", "/campaigns", "/breaks"]) { return Some("spots"); }
     if pick(&["/plan", "/sched", "/selector", "/playlists", "/events", "/shows", "/episodes", "/grid", "/rotations"]) { return Some("schedule"); }
     if pick(&["/encoders", "/relay", "/meta", "/rds", "/dab", "/outputs"]) { return Some("broadcast"); }

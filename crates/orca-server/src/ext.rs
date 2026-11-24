@@ -24,6 +24,15 @@ pub fn routes() -> Router<St> {
         // knihovna
         .route("/library/upload", post(upload).layer(DefaultBodyLimit::max(8 * 1024 * 1024 * 1024)))
         .route("/library/import", post(import_paths))
+        // video → zvuk
+        .route("/video", get(video_list))
+        .route("/video/upload", post(video_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024 * 1024)))
+        .route("/video/export", post(video_export))
+        .route("/video/delete", post(video_delete))
+        // úložiště
+        .route("/storage", get(storage_get))
+        .route("/storage/refresh", post(storage_refresh))
+        .route("/storage/empty-trash", post(storage_empty_trash))
         .route("/library/info", get(library_info))
         .route("/library/export.txt", get(export_txt))
         .route("/library/broadcasts", get(broadcasts))
@@ -133,6 +142,64 @@ async fn upload(State(o): State<St>, Query(q): Query<UploadQ>, mut mp: Multipart
     }).await?;
     if !rep.added.is_empty() { o.events.emit(orca_core::events::Event::LibraryChanged { added: rep.added.len(), updated: 0, missing: 0 }); }
     Ok(Json(rep).into_response())
+}
+
+async fn video_list(State(o): State<St>) -> ApiResult {
+    let v = o.video.clone();
+    let (dir, items) = blocking(move || Ok((v.dir(), v.list()))).await?;
+    let ffmpeg = orca_core::encoder::resolve_ffmpeg(&o.cfg.read());
+    Ok(Json(json!({ "dir": dir, "items": items, "ffmpeg": ffmpeg })).into_response())
+}
+
+/// multipart: videa do složky Video (zapisují se pod dočasným jménem, aby je převod nezachytil rozepsané)
+async fn video_upload(State(o): State<St>, mut mp: Multipart) -> ApiResult {
+    let dir = o.video.dir();
+    tokio::fs::create_dir_all(&dir).await?;
+    let mut saved = vec![]; let mut skipped = vec![];
+    while let Some(mut field) = mp.next_field().await.map_err(|e| bad(&e.to_string()))? {
+        let Some(fname) = field.file_name().map(sanitize) else { continue };
+        if !orca_core::video::is_video(std::path::Path::new(&fname)) { skipped.push(format!("{fname}: není video")); continue; }
+        let Some(dest) = unique_path(&dir, &fname, "rename") else { skipped.push(fname); continue };
+        let tmp = dir.join(format!(".orca-upload-{}", uuid_like()));
+        let mut f = tokio::fs::File::create(&tmp).await?;
+        while let Some(chunk) = field.chunk().await.map_err(|e| bad(&e.to_string()))? { f.write_all(&chunk).await?; }
+        f.flush().await?; drop(f);
+        tokio::fs::rename(&tmp, &dest).await?;
+        saved.push(dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    }
+    Ok(Json(json!({ "saved": saved, "skipped": skipped })).into_response())
+}
+
+#[derive(Deserialize, Default)]
+struct VideoSel { #[serde(default)] names: Vec<String>, #[serde(default)] exported_only: bool }
+
+async fn video_export(State(o): State<St>, Json(b): Json<VideoSel>) -> ApiResult {
+    let n = o.video.enqueue(&b.names);
+    Ok(Json(json!({ "queued": n })).into_response())
+}
+
+async fn video_delete(State(o): State<St>, Json(b): Json<VideoSel>) -> ApiResult {
+    let v = o.video.clone();
+    let (n, bytes) = blocking(move || Ok(v.delete(&b.names, b.exported_only))).await?;
+    Ok(Json(json!({ "deleted": n, "bytes": bytes })).into_response())
+}
+
+async fn storage_get(State(o): State<St>) -> ApiResult {
+    let r = o.storage.report.lock().clone();
+    if r.computed_at.is_none() && !r.running { o.storage.refresh(o.cfg.read().clone(), o.data_dir.clone()); }
+    Ok(Json(json!(o.storage.report.lock().clone())).into_response())
+}
+
+async fn storage_refresh(State(o): State<St>) -> ApiResult {
+    o.storage.refresh(o.cfg.read().clone(), o.data_dir.clone());
+    Ok(Json(json!({ "ok": true })).into_response())
+}
+
+async fn storage_empty_trash(State(o): State<St>) -> ApiResult {
+    let (c, d) = (o.cfg.read().clone(), o.data_dir.clone());
+    let (n, bytes) = blocking(move || Ok(orca_core::storage::empty_trash(&c, &d))).await?;
+    o.storage.refresh(o.cfg.read().clone(), o.data_dir.clone());
+    Ok(Json(json!({ "deleted": n, "bytes": bytes })).into_response())
 }
 
 fn uuid_like() -> String { format!("{:x}{:x}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)) }
