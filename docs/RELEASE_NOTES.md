@@ -1,4 +1,8 @@
-# ORCA RadioAIR 0.7.0 – testovací verze
+# ORCA RadioAIR 0.7.1 – testovací verze
+
+## Opravy v 0.7.1
+- **Streamy:** mezera nebo „http://“ v poli Server (častá při vložení adresy) způsobovala chybu „Failed to resolve hostname“. ORCA teď adresu serveru, port vložený za dvojtečkou, mount a uživatele sama očistí – při psaní i před připojením.
+- **Streamy:** chybové hlášení začíná srozumitelným vysvětlením (server nenalezen / špatné heslo / port nepřijímá spojení / mount obsazený) a **heslo se v hlášení ani v upozorněních už nezobrazuje**.
 
 ## Novinky v 0.7.0
 - **Výběr mikrofonu ve studiu** – kolečko vedle MIC: „Přes mixážní pult“ (jen ztlumí hudbu) nebo „Přes počítač“ (USB mikrofon / zvuková karta, ORCA mikrofon přimíchá do vysílání); výběr vstupu, kanálu, zesílení, šumové brány a živý měřák. Odpojený vstup se po připojení sám napojí.

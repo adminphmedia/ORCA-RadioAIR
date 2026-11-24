@@ -54,7 +54,38 @@ pub fn resolve_ffmpeg(cfg: &Config) -> PathBuf {
     PathBuf::from(exe)
 }
 
+/// Očistí ručně zadané / vložené údaje: mezery okolo, „http://“ v adrese serveru, port nebo cesta vložené
+/// do pole Server, mezery v mountu. Předejde chybám typu „Failed to resolve hostname“ kvůli mezeře.
+pub fn normalize(e: &EncoderConfig) -> EncoderConfig {
+    let mut e = e.clone();
+    let mut h = e.host.trim().to_string();
+    for p in ["http://", "https://", "icecast://"] { if h.to_lowercase().starts_with(p) { h = h[p.len()..].to_string(); } }
+    if let Some(i) = h.rfind('@') { h = h[i + 1..].to_string(); }
+    let mut path = String::new();
+    if let Some(i) = h.find('/') { path = h[i..].to_string(); h.truncate(i); }
+    if let Some((a, b)) = h.rsplit_once(':') { if !a.contains(':') { if let Ok(p) = b.parse::<u16>() { if p > 0 { e.port = p; } h = a.to_string(); } } }
+    e.host = h.trim().to_string();
+    let m: String = e.mount.trim().chars().filter(|c| !c.is_whitespace()).collect();
+    e.mount = if m.is_empty() || m == "/" { if path.len() > 1 { path } else { m } } else { m };
+    e.username = e.username.trim().to_string();
+    e.password = e.password.trim_matches(|c| c == '\n' || c == '\r').to_string();
+    e
+}
+
+/// Srozumitelné vysvětlení nejčastějších chyb ffmpeg / Icecast (zobrazí se před technickým detailem).
+pub fn explain(msg: &str) -> Option<&'static str> {
+    let m = msg.to_lowercase();
+    if m.contains("failed to resolve hostname") || m.contains("name or service not known") || m.contains("nodename nor servname") { return Some("Server nebyl nalezen – zkontrolujte adresu serveru (bez mezer a bez http://) a připojení k internetu."); }
+    if m.contains("401") || m.contains("unauthorized") || m.contains("authentication") { return Some("Server odmítl přihlášení – zkontrolujte uživatele (obvykle „source“) a heslo."); }
+    if m.contains("403") || m.contains("forbidden") || m.contains("mountpoint") || m.contains("in use") { return Some("Server odmítl mount – je obsazený jiným zdrojem, nebo není na serveru povolený."); }
+    if m.contains("connection refused") { return Some("Server na tomto portu nepřijímá spojení – zkontrolujte port a že Icecast běží."); }
+    if m.contains("timed out") || m.contains("timeout") { return Some("Server neodpovídá – zkontrolujte adresu, port a firewall."); }
+    if m.contains("unknown encoder") || m.contains("encoder not found") { return Some("Zvolený formát tato verze ffmpeg neumí – zkuste MP3 nebo AAC."); }
+    None
+}
+
 pub fn public_url(e: &EncoderConfig) -> String {
+    let e = &normalize(e);
     let mount = if e.mount.starts_with('/') { e.mount.clone() } else { format!("/{}", e.mount) };
     format!("http://{}:{}{}", e.host, e.port, mount)
 }
@@ -62,6 +93,7 @@ pub fn public_url(e: &EncoderConfig) -> String {
 fn pct(s: &str) -> String { urlencoding::encode(s).into_owned() }
 
 pub fn ffmpeg_args(e: &EncoderConfig, in_rate: u32) -> Vec<String> {
+    let e = &normalize(e);
     let mount = if e.mount.starts_with('/') { e.mount.clone() } else { format!("/{}", e.mount) };
     let (codec, fmt, ctype) = match e.format {
         StreamFormat::Mp3 => ("libmp3lame", "mp3", "audio/mpeg"),
@@ -125,6 +157,13 @@ impl EncoderManager {
     }
 
     fn set_state(&self, st: &Arc<Mutex<EncoderStatus>>, state: &str, msg: &str) {
+        // heslo nikdy do stavu, upozornění ani logu
+        let id = st.lock().id.clone();
+        let pw = self.cfg.read().encoders.iter().find(|e| e.id == id).map(|e| normalize(e).password).unwrap_or_default();
+        let mut msg = msg.to_string();
+        if !pw.is_empty() { msg = msg.replace(&pct(&pw), "••••").replace(&pw, "••••"); }
+        if state == "error" { if let Some(h) = explain(&msg) { msg = format!("{h} Detail: {msg}"); } }
+        let msg = msg.as_str();
         let mut s = st.lock();
         if s.state != state || s.message != msg {
             s.state = state.into();
@@ -242,7 +281,8 @@ impl EncoderManager {
             let detail = tail.lock().iter().cloned().collect::<Vec<_>>().join(" | ");
             let msg = if detail.is_empty() { reason } else { format!("{reason}: {detail}") };
             self.set_state(&status, "error", &msg);
-            self.events.alert("warning", "encoder_disconnected", format!("{}: {msg}", ec.name));
+            let shown = status.lock().message.clone();
+            self.events.alert("warning", "encoder_disconnected", format!("{}: {shown}", ec.name));
             self.wait_or_stop(&stop, ec.reconnect_s.max(2));
         }
         status.lock().state = "stopped".into();
@@ -275,4 +315,21 @@ pub fn send_metadata(e: &EncoderConfig, text: &str) -> anyhow::Result<()> {
     let auth = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", e.username, e.password));
     ureq::get(&url).set("Authorization", &format!("Basic {auth}")).timeout(Duration::from_secs(5)).call()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::*;
+    #[test]
+    fn cleans_pasted_values() {
+        let mut e = EncoderConfig::default();
+        e.host = " 5.39.201.144".into(); e.port = 8000; e.mount = "/energic ".into(); e.password = "tajne+heslo".into();
+        let n = normalize(&e);
+        assert_eq!(n.host, "5.39.201.144"); assert_eq!(n.mount, "/energic");
+        assert!(ffmpeg_args(&e, 48000).last().unwrap().contains("@5.39.201.144:8000/energic"));
+        e.host = "http://stream.example.cz:8002/live".into(); e.mount = "".into();
+        let n = normalize(&e);
+        assert_eq!((n.host.as_str(), n.port, n.mount.as_str()), ("stream.example.cz", 8002, "/live"));
+        assert!(explain("Failed to resolve hostname x").is_some());
+    }
 }
