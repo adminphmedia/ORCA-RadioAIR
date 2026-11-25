@@ -39,6 +39,7 @@ pub mod spots;
 pub mod stitcher;
 pub mod users;
 pub mod video;
+pub mod business;
 pub mod storage;
 pub mod weather;
 

@@ -41,6 +41,7 @@ pub fn routes() -> Router<St> {
         .route("/selector/duplicates", get(duplicates))
         .route("/selector/categories", get(lib_categories))
         .route("/analytics/station", post(an_station))
+        .route("/analytics/business", post(an_business))
         .route("/analytics/track/{id}", get(an_track))
         .route("/analytics/artist", get(an_artist))
         .route("/analytics/rotation", get(an_rotation))
@@ -390,6 +391,16 @@ fn spins_for(o: &St, cfg: &SelectorConfig, f: &analytics::Filter, from: NaiveDat
     let years: HashMap<i64, (Option<i32>, String)> = tracks.iter().map(|t| (t.id, (t.year, t.genre.clone()))).collect();
     analytics::enrich(&mut spins, &all, &years);
     Ok(analytics::filter(spins, f, cfg, from, to))
+}
+
+async fn an_business(State(o): State<St>, Json(f): Json<analytics::Filter>) -> ApiResult {
+    let v = blocking(move || {
+        let from = NaiveDate::parse_from_str(&f.from, "%Y-%m-%d").unwrap_or_else(|_| today() - Duration::days(6));
+        let to = NaiveDate::parse_from_str(&f.to, "%Y-%m-%d").unwrap_or_else(|_| today());
+        if (to - from).num_days() > 400 { anyhow::bail!("nejvýše 400 dní"); }
+        orca_core::business::report(&o.db, from, to)
+    }).await?;
+    Ok(Json(json!(v)).into_response())
 }
 
 async fn an_station(State(o): State<St>, Json(f): Json<analytics::Filter>) -> ApiResult {
