@@ -269,7 +269,13 @@ pub struct QueueItem {
     /// Položka plánu ORCA Music Selector (vazba as-played → plán).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_item: Option<i64>,
+    /// Poznámka pro moderátora (memo) – nic nehraje, jen se zobrazí ve frontě; engine ji při dojetí přeskočí.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<Note>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Note { pub memo_id: Option<i64>, pub title: String, pub body: String, pub color: String }
 
 impl QueueItem {
     /// Bude hrát přes předchozí položku (ne samostatně v řadě)?
@@ -279,6 +285,7 @@ impl QueueItem {
 
     /// Doba, o kterou položka posune vysílání (pro odhad časů).
     pub fn slot_ms(&self) -> i64 {
+        if self.note.is_some() { return 0; }
         if self.live { return self.track.duration_ms.max(0); }
         match self.bed.as_deref() {
             Some("off") => 3000,
@@ -286,6 +293,14 @@ impl QueueItem {
             None if self.track.kind() == TrackKind::Bed => self.track.bed_intro_ms.max(0),
             None => { let (ci, mix, _) = self.track.effective_cues(); (mix - ci).max(0) }
         }
+    }
+
+    /// Poznámka pro moderátora ve frontě (nehraje, bez času).
+    pub fn note(n: Note, source: &str) -> Self {
+        let t = Track { kind: Some(TrackKind::Asset), title: if n.title.trim().is_empty() { "Poznámka".into() } else { n.title.trim().to_string() }, filename: "memo".into(), enabled: true, analyzed: true, ..Default::default() };
+        let mut q = Self::new(t, source, "poznámka pro moderátora");
+        q.note = Some(n);
+        q
     }
 
     /// Živý vstup (moderátor, telefon, host) – playlist se přeruší a pokračuje na pokyn.
@@ -315,7 +330,7 @@ impl QueueItem {
     }
 
     pub fn new(track: Track, source: &str, reason: impl Into<String>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None, bed: None, live: false, live_auto: false, plan_item: None }
+        Self { id: uuid::Uuid::new_v4().to_string(), track, source: source.into(), reason: reason.into(), eta: None, position: None, stitch: None, break_ref: None, relay: None, bed: None, live: false, live_auto: false, plan_item: None, note: None }
     }
 }
 

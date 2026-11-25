@@ -58,6 +58,7 @@ pub fn router(orca: St) -> Router {
         .route("/queue", get(queue_get).post(queue_add).delete(queue_clear))
         .route("/queue/{id}", axum::routing::delete(queue_remove))
         .route("/queue/move", post(queue_move))
+        .route("/queue/note", post(queue_note))
         .route("/ai/presets", get(ai_presets))
         .route("/ai/models", post(ai_models))
         .route("/ai/track-notes/{id}", post(ai_track_notes))
@@ -208,6 +209,23 @@ async fn queue_add(State(o): State<St>, Json(b): Json<QueueAdd>) -> ApiResult {
     let t = o.db.get_track(b.track_id)?.ok_or_else(|| not_found("skladba"))?;
     let mut item = QueueItem::new(t, "manual", "přidáno ručně");
     if item.track.kind().is_overlay_capable() { item.position = b.overlay_position.clone(); }
+    let id = item.id.clone();
+    o.engine.queue_push(item, b.position);
+    Ok(Json(json!({"ok": true, "id": id})).into_response())
+}
+#[derive(Deserialize)]
+struct QueueNote { #[serde(default)] memo_id: Option<i64>, #[serde(default)] title: String, #[serde(default)] body: String, #[serde(default)] color: String, #[serde(default)] position: Option<usize> }
+/// Poznámka (memo) do fronty – nehraje, moderátor si ji otevře a přečte.
+async fn queue_note(State(o): State<St>, Json(b): Json<QueueNote>) -> ApiResult {
+    let mut n = orca_core::model::Note { memo_id: b.memo_id, title: b.title, body: b.body, color: b.color };
+    if let Some(id) = b.memo_id {
+        let m = orca_core::catalog::list_memos(&o.db, None, None)?.into_iter().find(|m| m.id == id).ok_or_else(|| not_found("poznámka"))?;
+        if n.title.is_empty() { n.title = m.title; }
+        if n.body.is_empty() { n.body = m.body; }
+        if n.color.is_empty() { n.color = m.color; }
+    }
+    if n.title.trim().is_empty() && n.body.trim().is_empty() { return Err(bad("prázdná poznámka")); }
+    let item = QueueItem::note(n, "manual");
     let id = item.id.clone();
     o.engine.queue_push(item, b.position);
     Ok(Json(json!({"ok": true, "id": id})).into_response())

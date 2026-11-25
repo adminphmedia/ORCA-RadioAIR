@@ -1,3 +1,11 @@
+# ORCA RadioAIR 0.7.7 – testovací verze
+
+## Novinky v 0.7.7
+- **Zvukový processing – hlavní vypínač:** velký pruh se stavem (Processing běží / vypnutý / spouští se / problém / servisní bypass), přepínač Zapnuto–Vypnuto s potvrzením (zapne se hned, bez nasazování), **Diagnostika** s kontrolním seznamem a tlačítkem opravy u každého problému (vypnout bypass, zapnout ochranu streamů, restartovat streamy, otevřít Audio). Upozornění u presetu Transparent (jen ochrana výstupů).
+- **Jednoduché clocky:** krok s **konkrétním souborem** (📌 např. znělka zpráv); barevná značka u každého kroku shodná s náhledem hodiny; u kroku odhad délky (průměrná stopáž kategorie / přesná délka souboru) a čas začátku v hodině; **Délka hodiny** – kolik zbývá do 60 minut a kolik skladeb se ještě vejde; náhled hodiny podle skutečných délek, **zvětšení** a **stažení PNG** s názvem hodiny.
+- **Analytika – Obchod a provoz:** reklamní spoty a minuty, reklama za hodinu a hodiny nad 12 minut, odhad tržeb, **plnění kampaní** (objednáno / odvysíláno / kolik by mělo být dnes), klienti a obory inzerentů, skladba programu, reklamní zátěž po hodinách a týdnu, podíl živého vysílání, imaging za hodinu, kvalita provozu (nedohrané spoty, spoty bez kampaně, přeskočené skladby). **U všech údajů analytiky ikona ⓘ** s vysvětlením.
+- **Poznámky ve frontě vysílání a playlistech:** memo nebo vlastní text jako odsazená položka bez času, nic nehraje; kliknutím se otevře velkým písmem; vložení přetažením z panelu Memos, ikonou + u memo, ikonou lístečku ve frontě nebo položkou Poznámka v playlistu; při dojetí vysílání sama zmizí.
+
 # ORCA RadioAIR 0.7.6 – testovací verze
 
 ## Opravy v 0.7.6

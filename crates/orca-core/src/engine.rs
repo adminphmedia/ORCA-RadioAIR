@@ -980,7 +980,7 @@ impl Engine {
         let head = self.queue.lock().front().cloned();
         match (&head, preloaded.as_ref()) {
             (Some(h), Some((id, _))) if *id == h.id => {}
-            (Some(h), _) if h.stitch.is_some() || h.is_attached_overlay() || h.bed.is_some() || h.live || h.track.kind() == crate::model::TrackKind::Bed => *preloaded = None,
+            (Some(h), _) if h.note.is_some() || h.stitch.is_some() || h.is_attached_overlay() || h.bed.is_some() || h.live || h.track.kind() == crate::model::TrackKind::Bed => *preloaded = None,
             (Some(h), _) if h.relay.is_some() => {
                 let rate = self.sample_rate();
                 let max_frames = (h.track.effective_cues().2.max(0) as u64 * rate as u64) / 1000;
@@ -1000,7 +1000,12 @@ impl Engine {
     }
 
     fn start_next(&self, preloaded: &mut Option<(String, Prefetch)>) -> Option<(Voice, Option<Voice>)> {
-        let mut item = self.queue.lock().pop_front()?;
+        // poznámky pro moderátora se nepřehrávají – při dojetí se tiše odeberou
+        let mut item = loop {
+            let it = self.queue.lock().pop_front()?;
+            if it.note.is_some() { self.events.emit(Event::QueueChanged); continue; }
+            break it;
+        };
         let mut pre = match preloaded.take() { Some((id, p)) if id == item.id => Some(p), _ => None };
         let before = item.track.effective_cues();
         self.refresh(&mut item);

@@ -95,13 +95,17 @@ pub struct PlItem {
     pub position: Option<String>,
     /// Popisek (pro poznámky a přehled)
     pub label: String,
+    /// note: memo z knihovny poznámek (text se načte při vložení do fronty)
+    pub memo_id: Option<i64>,
+    /// note: vlastní text poznámky pro moderátora
+    pub text: String,
 }
 
 impl Default for PlItem {
     fn default() -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(), typ: "track".into(), track_id: None, kind: None, category: String::new(), mode: String::new(), nth: 1,
-            show_id: None, episode_id: None, stitch: None, relay_id: None, duration_s: 0, position: None, label: String::new(),
+            show_id: None, episode_id: None, stitch: None, relay_id: None, duration_s: 0, position: None, label: String::new(), memo_id: None, text: String::new(),
         }
     }
 }
@@ -486,6 +490,17 @@ pub fn expand(db: &Db, cfg: &Config, items: &[PlItem], source: &str, reason: &st
             "stitch" => if let Some(k) = &it.stitch {
                 out.push(crate::stitcher::queue_item(k, 20_000, &format!("{reason} • Stitcher")));
             },
+            "note" => {
+                let mut n = crate::model::Note { memo_id: it.memo_id, title: it.label.clone(), body: it.text.clone(), color: String::new() };
+                if let Some(mid) = it.memo_id {
+                    if let Some(m) = crate::catalog::list_memos(db, None, None)?.into_iter().find(|m| m.id == mid) {
+                        if n.title.trim().is_empty() { n.title = m.title; }
+                        if n.body.trim().is_empty() { n.body = m.body; }
+                        n.color = m.color;
+                    }
+                }
+                if !n.title.trim().is_empty() || !n.body.trim().is_empty() { out.push(QueueItem::note(n, source)); }
+            }
             "live" => out.push(QueueItem::live_break(&it.label, it.duration_s as i64 * 1000, it.mode == "auto", source, format!("{reason} • živý vstup"))),
             "bed" => {
                 if it.mode == "off" { out.push(QueueItem::bed_off(source, format!("{reason} • podkres OFF"))); continue; }
