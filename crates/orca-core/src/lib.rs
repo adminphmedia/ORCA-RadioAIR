@@ -133,6 +133,7 @@ impl Orca {
                 std::thread::sleep(std::time::Duration::from_secs(3480));
             }).ok();
         }
+        storage::start_watch(cfg.clone(), data_dir.to_path_buf(), events.clone());
         let video = video::VideoManager::start(cfg.clone(), data_dir.to_path_buf(), library.clone(), events.clone());
         encoders.autostart();
         update::mark_version(data_dir);

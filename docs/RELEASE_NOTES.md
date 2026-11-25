@@ -1,3 +1,9 @@
+# ORCA RadioAIR 0.7.5 – testovací verze
+
+## Novinky v 0.7.5
+- **Studio: okno Disk** vedle stavu streamů – kroužek se zaplněním disku (ORCA / ostatní data), volné místo v GB a %, barevně (zelená / oranžová pod 20 % / červená „Málo místa!“ pod 10 % nebo 5 GB), podrobnosti po najetí myší, kliknutím Úložiště.
+- **Hlídání místa:** engine každých 10 minut kontroluje disky a při nedostatku místa pošle upozornění (nejvýš jednou za 6 hodin).
+
 # ORCA RadioAIR 0.7.4 – testovací verze
 
 ## Opravy v 0.7.4

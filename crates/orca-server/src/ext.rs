@@ -32,6 +32,7 @@ pub fn routes() -> Router<St> {
         // úložiště
         .route("/storage", get(storage_get))
         .route("/storage/refresh", post(storage_refresh))
+        .route("/storage/disk", get(storage_disk))
         .route("/storage/empty-trash", post(storage_empty_trash))
         .route("/library/info", get(library_info))
         .route("/library/export.txt", get(export_txt))
@@ -188,6 +189,17 @@ async fn storage_get(State(o): State<St>) -> ApiResult {
     let r = o.storage.report.lock().clone();
     if r.computed_at.is_none() && !r.running { o.storage.refresh(o.cfg.read().clone(), o.data_dir.clone()); }
     Ok(Json(json!(o.storage.report.lock().clone())).into_response())
+}
+
+/// Rychlé: jen volné místo na discích (pro okno ve studiu)
+async fn storage_disk(State(o): State<St>) -> ApiResult {
+    let (c, d, last) = (o.cfg.read().clone(), o.data_dir.clone(), o.storage.report.lock().clone());
+    // podíl ORCA na disku: jednou spočítat na pozadí, pak hodinově obnovovat
+    let stale = last.computed_at.as_deref().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| (chrono::Local::now() - t.with_timezone(&chrono::Local)).num_minutes() > 60).unwrap_or(true);
+    if stale && !last.running { o.storage.refresh(c.clone(), d.clone()); }
+    let disks = blocking(move || Ok(orca_core::storage::disks_quick(&c, &d, &last))).await?;
+    let low = disks.iter().any(orca_core::storage::is_low);
+    Ok(Json(json!({ "disks": disks, "low": low, "orca_total": o.storage.report.lock().total })).into_response())
 }
 
 async fn storage_refresh(State(o): State<St>) -> ApiResult {

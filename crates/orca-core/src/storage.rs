@@ -146,3 +146,38 @@ pub fn empty_trash(cfg: &Config, data_dir: &Path) -> (u64, u64) {
     let left = walk(&trash);
     (u.files - left.files.min(u.files), u.bytes - left.bytes.min(u.bytes))
 }
+
+/// Rychlý přehled disků (jen celkem/volno, bez procházení složek) – pro malé okno ve studiu.
+pub fn disks_quick(cfg: &Config, data_dir: &Path, last: &Report) -> Vec<Disk> {
+    let root = crate::library::library_root(cfg, data_dir);
+    let mut out: Vec<Disk> = vec![];
+    for p in [data_dir.to_path_buf(), root] {
+        let (Ok(t), Ok(f)) = (fs4::total_space(&p), fs4::available_space(&p)) else { continue };
+        if out.iter().any(|d| d.total == t && d.free.abs_diff(f) < 256 * 1024 * 1024) { continue; }
+        // ORCA z posledního přepočtu (stejný disk)
+        let orca = last.disks.iter().find(|d| d.total == t).map(|d| d.orca).unwrap_or(0);
+        out.push(Disk { path: p.to_string_lossy().to_string(), total: t, free: f, orca });
+    }
+    out
+}
+
+/// Málo místa: méně než 10 % nebo méně než 5 GB volných.
+pub fn is_low(d: &Disk) -> bool { d.total > 0 && (d.free * 10 < d.total || d.free < 5 * 1024 * 1024 * 1024) }
+
+/// Hlídání místa: každých 10 minut; upozornění nejvýš jednou za 6 hodin na disk.
+pub fn start_watch(cfg: Arc<parking_lot::RwLock<Config>>, data_dir: PathBuf, events: crate::events::EventBus) {
+    std::thread::Builder::new().name("orca-disk-watch".into()).spawn(move || {
+        let mut last_alert: std::collections::HashMap<String, std::time::Instant> = Default::default();
+        loop {
+            let c = cfg.read().clone();
+            for d in disks_quick(&c, &data_dir, &Report::default()) {
+                if !is_low(&d) { continue; }
+                if last_alert.get(&d.path).map(|t| t.elapsed().as_secs() < 6 * 3600).unwrap_or(false) { continue; }
+                last_alert.insert(d.path.clone(), std::time::Instant::now());
+                let gb = d.free as f64 / 1024f64.powi(3);
+                events.alert("warning", "disk_low", format!("Na disku dochází místo: volných {:.1} GB ({:.0} %) – {}. Uvolněte místo (Ovládací panel → Úložiště).", gb, d.free as f64 * 100.0 / d.total as f64, d.path));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(600));
+        }
+    }).ok();
+}
