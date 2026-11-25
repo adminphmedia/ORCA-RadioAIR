@@ -50,7 +50,12 @@ pub struct Automation {
     last_no_tracks_alert: Mutex<Option<Instant>>,
     last_sched: Mutex<Option<Instant>>,
     last_maint: Mutex<Option<Instant>>,
+    /// Časomíry v přesný čas: (cíl = začátek posledního tónu, nastavení, id, popis)
+    countdowns: Mutex<Vec<PendingCountdown>>,
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingCountdown { pub id: String, pub at: String, #[serde(skip)] pub at_dt: DateTime<Local>, pub spec: crate::countdown::CountdownSpec, pub label: String }
 
 pub fn now_local(cfg: &Config) -> DateTime<Local> { Local::now() + chrono::Duration::seconds(cfg.station.time_offset_s) }
 
@@ -60,11 +65,11 @@ impl Automation {
         let a = Arc::new(Self {
             db, cfg, engine, encoders, events: events.clone(), np: NowPlayingWriter { data_dir }, mode: RwLock::new(mode),
             log_ids: Mutex::new(HashMap::new()), cursor: Mutex::new((String::new(), 0)), history: Mutex::new(VecDeque::new()),
-            last_no_tracks_alert: Mutex::new(None), last_sched: Mutex::new(None), last_maint: Mutex::new(None),
+            last_no_tracks_alert: Mutex::new(None), last_sched: Mutex::new(None), last_maint: Mutex::new(None), countdowns: Mutex::new(vec![]),
         });
         let rx = events.subscribe();
         { let a = a.clone(); std::thread::Builder::new().name("orca-auto-events".into()).spawn(move || { while let Ok(ev) = rx.recv() { a.on_event(ev); } }).ok(); }
-        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.breaks_tick(); a.sched_tick(); a.fill_queue(); a.maintenance(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
+        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.countdown_tick(); a.breaks_tick(); a.sched_tick(); a.fill_queue(); a.maintenance(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
         a
     }
 
@@ -280,6 +285,54 @@ impl Automation {
     }
 
     /// Naplánované playlisty, programová mřížka a události.
+    /// Časomíra: hned (přeruší aktuální položku), jako další, nebo v přesný čas.
+    pub fn countdown_now(&self, spec: &crate::countdown::CountdownSpec, interrupt: bool) -> anyhow::Result<()> {
+        let rate = self.engine.sample_rate().max(8000);
+        let (path, ms) = crate::countdown::render(&self.db, &self.np.data_dir, spec, rate, 0)?;
+        self.engine.queue_push(crate::countdown::queue_item(spec, &path, ms, "manual", "časomíra"), Some(0));
+        if interrupt { self.engine.send(crate::engine::Cmd::Next); }
+        Ok(())
+    }
+
+    pub fn countdown_at(&self, at: DateTime<Local>, spec: crate::countdown::CountdownSpec, label: &str) -> String {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        self.countdowns.lock().push(PendingCountdown { id: id.clone(), at: at.to_rfc3339(), at_dt: at, label: if label.is_empty() { spec.label() } else { label.to_string() }, spec });
+        id
+    }
+    pub fn countdowns(&self) -> Vec<PendingCountdown> { let mut v = self.countdowns.lock().clone(); v.sort_by_key(|c| c.at_dt); v }
+    pub fn countdown_cancel(&self, id: &str) -> bool { let mut l = self.countdowns.lock(); let n = l.len(); l.retain(|c| c.id != id); l.len() != n }
+
+    /// Každých 300 ms: časomíry v přesný čas. Start se spočítá tak, aby poslední tón zazněl přesně v cíl;
+    /// nepřesnost smyčky se vyrovná krátkou předehrou (ticho / podkres) na začátku souboru.
+    fn countdown_tick(&self) {
+        let cfg = self.cfg.read().clone();
+        let now = now_local(&cfg);
+        let due: Vec<PendingCountdown> = {
+            let mut l = self.countdowns.lock();
+            l.retain(|c| c.at_dt > now - chrono::Duration::seconds(30)); // zmeškané zahodit
+            let (d, keep): (Vec<_>, Vec<_>) = l.drain(..).partition(|c| {
+                let pre = if c.spec.bed_track_id.is_some() { (c.spec.bed_pre_s.clamp(0.0, 30.0) * 1000.0) as i64 } else { 0 };
+                let start = c.at_dt - chrono::Duration::milliseconds(c.spec.to_final_ms() + pre);
+                now >= start - chrono::Duration::milliseconds(450)
+            });
+            *l = keep; d
+        };
+        for c in due {
+            let pre = if c.spec.bed_track_id.is_some() { (c.spec.bed_pre_s.clamp(0.0, 30.0) * 1000.0) as i64 } else { 0 };
+            let start = c.at_dt - chrono::Duration::milliseconds(c.spec.to_final_ms() + pre);
+            let lead = (start - now_local(&cfg)).num_milliseconds().max(0);
+            let rate = self.engine.sample_rate().max(8000);
+            match crate::countdown::render(&self.db, &self.np.data_dir, &c.spec, rate, lead) {
+                Ok((path, ms)) => {
+                    self.engine.queue_push(crate::countdown::queue_item(&c.spec, &path, ms, "event", &format!("časomíra na {}", c.at_dt.format("%H:%M:%S"))), Some(0));
+                    self.engine.send(crate::engine::Cmd::Next);
+                    log::info!("časomíra {}: start, předehra {lead} ms", c.at_dt.format("%H:%M:%S"));
+                }
+                Err(e) => self.events.alert("warning", "countdown", format!("Časomíra {}: {e}", c.at_dt.format("%H:%M:%S"))),
+            }
+        }
+    }
+
     fn sched_tick(&self) {
         {
             let mut l = self.last_sched.lock();
@@ -333,6 +386,11 @@ impl Automation {
             _ => {
                 let Some(e) = sched::get::<SchedEvent>(&self.db, o.id)? else { return sched::mark_fired(&self.db, &o.key) };
                 let imm = e.start_immediately;
+                if e.action == "countdown" {
+                    // přesný čas hlídá countdown_tick (300 ms) – tady jen zaregistrovat
+                    self.countdown_at(t, e.countdown.clone().unwrap_or_default(), &e.name);
+                    return sched::mark_fired(&self.db, &o.key);
+                }
                 match e.action.as_str() {
                     "playlist" => if let Some(p) = e.playlist_id.and_then(|id| sched::get::<Playlist>(&self.db, id).ok().flatten()) { plan = Some((p.items, imm || p.start_immediately, p.mode == "override", p.shuffle)); },
                     "episode" => plan = Some((vec![PlItem { typ: "episode".into(), show_id: e.show_id, mode: "next".into(), ..Default::default() }], imm, false, false)),

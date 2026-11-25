@@ -99,13 +99,15 @@ pub struct PlItem {
     pub memo_id: Option<i64>,
     /// note: vlastní text poznámky pro moderátora
     pub text: String,
+    /// countdown: časomíra (hraje v pořadí playlistu)
+    pub countdown: Option<crate::countdown::CountdownSpec>,
 }
 
 impl Default for PlItem {
     fn default() -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(), typ: "track".into(), track_id: None, kind: None, category: String::new(), mode: String::new(), nth: 1,
-            show_id: None, episode_id: None, stitch: None, relay_id: None, duration_s: 0, position: None, label: String::new(), memo_id: None, text: String::new(),
+            show_id: None, episode_id: None, stitch: None, relay_id: None, duration_s: 0, position: None, label: String::new(), memo_id: None, text: String::new(), countdown: None,
         }
     }
 }
@@ -225,11 +227,13 @@ pub struct SchedEvent {
     pub track_id: Option<i64>,
     pub stitch: Option<String>,
     pub start_immediately: bool,
+    /// action „countdown“: časomíra – poslední tón přesně v čase události
+    pub countdown: Option<crate::countdown::CountdownSpec>,
 }
 
 impl Default for SchedEvent {
     fn default() -> Self {
-        Self { id: None, name: String::new(), enabled: true, schedule: Schedule::default(), action: "playlist".into(), playlist_id: None, show_id: None, relay_id: None, duration_s: 0, track_id: None, stitch: None, start_immediately: false }
+        Self { id: None, name: String::new(), enabled: true, schedule: Schedule::default(), action: "playlist".into(), playlist_id: None, show_id: None, relay_id: None, duration_s: 0, track_id: None, stitch: None, start_immediately: false, countdown: None }
     }
 }
 
@@ -490,6 +494,13 @@ pub fn expand(db: &Db, cfg: &Config, items: &[PlItem], source: &str, reason: &st
             "stitch" => if let Some(k) = &it.stitch {
                 out.push(crate::stitcher::queue_item(k, 20_000, &format!("{reason} • Stitcher")));
             },
+            "countdown" => {
+                let spec = it.countdown.clone().unwrap_or_default();
+                match crate::countdown::render(db, &crate::countdown::data_dir_of(db), &spec, 48000, 0) {
+                    Ok((p, ms)) => out.push(crate::countdown::queue_item(&spec, &p, ms, source, &format!("{reason} • časomíra"))),
+                    Err(e) => warnings.push(format!("časomíra: {e}")),
+                }
+            }
             "note" => {
                 let mut n = crate::model::Note { memo_id: it.memo_id, title: it.label.clone(), body: it.text.clone(), color: String::new() };
                 if let Some(mid) = it.memo_id {

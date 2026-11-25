@@ -40,6 +40,7 @@ pub mod stitcher;
 pub mod users;
 pub mod video;
 pub mod business;
+pub mod countdown;
 pub mod storage;
 pub mod weather;
 
@@ -135,6 +136,7 @@ impl Orca {
                 std::thread::sleep(std::time::Duration::from_secs(3480));
             }).ok();
         }
+        countdown::set_data_dir(data_dir);
         storage::start_watch(cfg.clone(), data_dir.to_path_buf(), events.clone());
         let video = video::VideoManager::start(cfg.clone(), data_dir.to_path_buf(), library.clone(), events.clone());
         encoders.autostart();

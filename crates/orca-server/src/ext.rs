@@ -24,6 +24,12 @@ pub fn routes() -> Router<St> {
         // knihovna
         .route("/library/upload", post(upload).layer(DefaultBodyLimit::max(8 * 1024 * 1024 * 1024)))
         .route("/library/import", post(import_paths))
+        // časomíra
+        .route("/countdown", get(cd_info))
+        .route("/countdown/preview", post(cd_preview))
+        .route("/countdown/insert", post(cd_insert))
+        .route("/countdown/pending/{id}", axum::routing::delete(cd_cancel))
+        .route("/countdown/custom/{which}", post(cd_custom_upload).delete(cd_custom_delete).layer(DefaultBodyLimit::max(20 * 1024 * 1024)))
         // video → zvuk
         .route("/video", get(video_list))
         .route("/video/upload", post(video_upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024 * 1024)))
@@ -143,6 +149,68 @@ async fn upload(State(o): State<St>, Query(q): Query<UploadQ>, mut mp: Multipart
     }).await?;
     if !rep.added.is_empty() { o.events.emit(orca_core::events::Event::LibraryChanged { added: rep.added.len(), updated: 0, missing: 0 }); }
     Ok(Json(rep).into_response())
+}
+
+async fn cd_info(State(o): State<St>) -> ApiResult {
+    let (u, f) = orca_core::countdown::custom_status(&o.data_dir);
+    let styles: Vec<_> = orca_core::countdown::STYLES.iter().map(|(id, n)| json!({"id": id, "name": n})).collect();
+    Ok(Json(json!({ "styles": styles, "custom": { "unit": u, "final": f }, "pending": o.automation.countdowns() })).into_response())
+}
+
+#[derive(Deserialize)]
+struct CdReq { #[serde(default)] spec: orca_core::countdown::CountdownSpec, #[serde(default)] when: String, #[serde(default)] at: String, #[serde(default)] label: String }
+
+/// Náhled: vyrenderovaný zvuk odpočtu (WAV) k poslechu v prohlížeči.
+async fn cd_preview(State(o): State<St>, Json(r): Json<CdReq>) -> ApiResult {
+    let (db, dd) = (o.db.clone(), o.data_dir.clone());
+    let bytes = blocking(move || { let (p, _) = orca_core::countdown::render(&db, &dd, &r.spec, 48000, 0)?; let b = std::fs::read(&p)?; let _ = std::fs::remove_file(&p); Ok(b) }).await?;
+    Ok(([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response())
+}
+
+async fn cd_insert(State(o): State<St>, Json(r): Json<CdReq>) -> ApiResult {
+    match r.when.as_str() {
+        "at" => {
+            let t = chrono::NaiveTime::parse_from_str(r.at.trim(), "%H:%M:%S").or_else(|_| chrono::NaiveTime::parse_from_str(r.at.trim(), "%H:%M")).map_err(|_| bad("čas ve tvaru HH:MM:SS"))?;
+            let cfg = o.cfg.read().clone();
+            let now = orca_core::automation::now_local(&cfg);
+            let mut dt = now.date_naive().and_time(t);
+            if dt <= now.naive_local() + chrono::Duration::milliseconds(r.spec.to_final_ms() + 500) { dt += chrono::Duration::days(1); }
+            let at = chrono::TimeZone::from_local_datetime(&chrono::Local, &dt).single().ok_or_else(|| bad("neplatný čas"))?;
+            let id = o.automation.countdown_at(at, r.spec, &r.label);
+            Ok(Json(json!({ "ok": true, "id": id, "at": at.to_rfc3339() })).into_response())
+        }
+        w => {
+            let a = o.automation.clone(); let interrupt = w == "now";
+            blocking(move || a.countdown_now(&r.spec, interrupt)).await?;
+            Ok(Json(json!({ "ok": true })).into_response())
+        }
+    }
+}
+
+async fn cd_cancel(State(o): State<St>, Path(id): Path<String>) -> ApiResult {
+    if o.automation.countdown_cancel(&id) { Ok(Json(json!({"ok": true})).into_response()) } else { Err(not_found("časomíra")) }
+}
+
+/// Vlastní zvuk odpočtu: which = unit (jedna sekunda, max. 1 s) | final (závěrečný tón, max. 3 s)
+async fn cd_custom_upload(State(o): State<St>, Path(which): Path<String>, mut mp: Multipart) -> ApiResult {
+    if which != "unit" && which != "final" { return Err(bad("unit nebo final")); }
+    let dir = orca_core::countdown::dir(&o.data_dir);
+    tokio::fs::create_dir_all(&dir).await?;
+    let Some(field) = mp.next_field().await.map_err(|e| bad(&e.to_string()))? else { return Err(bad("chybí soubor")) };
+    let name = field.file_name().map(sanitize).unwrap_or_default();
+    let ext = std::path::Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_lowercase();
+    if !["wav", "mp3", "flac", "aiff", "aif", "ogg", "m4a"].contains(&ext.as_str()) { return Err(bad("podporované formáty: WAV, MP3, FLAC, AIFF, OGG, M4A")); }
+    let data = field.bytes().await.map_err(|e| bad(&e.to_string()))?;
+    // starý vlastní zvuk (jiná přípona) pryč
+    if let Ok(mut rd) = tokio::fs::read_dir(&dir).await { while let Ok(Some(e)) = rd.next_entry().await { if e.path().file_stem().and_then(|s| s.to_str()) == Some(&format!("custom_{which}")) { let _ = tokio::fs::remove_file(e.path()).await; } } }
+    tokio::fs::write(dir.join(format!("custom_{which}.{ext}")), &data).await?;
+    Ok(Json(json!({"ok": true})).into_response())
+}
+
+async fn cd_custom_delete(State(o): State<St>, Path(which): Path<String>) -> ApiResult {
+    let dir = orca_core::countdown::dir(&o.data_dir);
+    if let Ok(mut rd) = tokio::fs::read_dir(&dir).await { while let Ok(Some(e)) = rd.next_entry().await { if e.path().file_stem().and_then(|s| s.to_str()) == Some(&format!("custom_{which}")) { let _ = tokio::fs::remove_file(e.path()).await; } } }
+    Ok(Json(json!({"ok": true})).into_response())
 }
 
 async fn video_list(State(o): State<St>) -> ApiResult {

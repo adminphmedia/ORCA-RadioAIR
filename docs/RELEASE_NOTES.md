@@ -1,3 +1,15 @@
+# ORCA RadioAIR 0.7.8 – testovací verze
+
+## Časomíra (odpočet v přesný čas)
+- Studio → Fronta vysílání → ikona stopek: pípání odpočtu s dlouhým tónem přesně v zadaný čas (např. celá hodina před zprávami); po posledním tónu hned hraje další položka.
+- 10 vestavěných zvuků (klasické pípání, vysoké, jemný tón, digitální hodinky, tikání, sonar, stoupající, marimba, hluboký puls, zpravodajský blip) s poslechem ▶ a vlastní zvuk (jednotka max. 1 s, závěrečný tón max. 3 s).
+- Volitelný podkres namíchaný pod odpočet (hlasitost, předehra, dozvuk).
+- Kdy: v přesný čas (aktuální položka se plynule přeruší), jako další, hned; naplánované časomíry lze zrušit.
+- Pravidelně přes Události (akce Časomíra) a jako položka playlistu / pořadu.
+
+## Panely v samostatném okně
+- Panel otevřený v novém okně se ve studiu skryje (zástupce s tlačítkem Vrátit do studia); vrátit jde i tlačítkem v samotném okně.
+
 # ORCA RadioAIR 0.7.7 – testovací verze
 
 ## Novinky v 0.7.7
