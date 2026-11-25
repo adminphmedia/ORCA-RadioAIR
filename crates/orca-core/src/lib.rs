@@ -61,7 +61,8 @@ pub fn default_data_dir() -> PathBuf {
 /// Otevření samostatného okna s panelem studia (desktopová aplikace – více obrazovek): (panel, titulek)
 pub mod update;
 
-pub type WindowHook = Arc<dyn Fn(&str, &str) -> std::result::Result<(), String> + Send + Sync>;
+/// Nativní okna panelů (desktop): (akce "open" | "close", panel, titulek, owner = id okna studia, které panel vyjmulo)
+pub type WindowHook = Arc<dyn Fn(&str, &str, &str, &str) -> std::result::Result<(), String> + Send + Sync>;
 
 /// Celá běžící aplikace.
 pub struct Orca {

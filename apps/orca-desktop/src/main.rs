@@ -128,10 +128,15 @@ fn main() {
             {
                 let handle = app.handle().clone();
                 let bind = bind.clone();
-                *orca.window_hook.write() = Some(Arc::new(move |panel: &str, title: &str| {
+                *orca.window_hook.write() = Some(Arc::new(move |action: &str, panel: &str, title: &str, owner: &str| {
                     let label = format!("panel-{panel}");
+                    if action == "close" {
+                        if let Some(w) = handle.get_webview_window(&label) { let _ = w.close(); }
+                        return Ok(());
+                    }
                     if let Some(w) = handle.get_webview_window(&label) { let _ = w.unminimize(); let _ = w.show(); let _ = w.set_focus(); return Ok(()); }
-                    let url = tauri::Url::parse(&format!("http://{bind}/?panel={panel}")).map_err(|e| e.to_string())?;
+                    let owner: String = owner.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                    let url = tauri::Url::parse(&format!("http://{bind}/?panel={panel}&owner={owner}")).map_err(|e| e.to_string())?;
                     let (h2, title) = (handle.clone(), format!("ORCA RadioAIR – {title}"));
                     handle.run_on_main_thread(move || {
                         if let Err(e) = WebviewWindowBuilder::new(&h2, label, WebviewUrl::External(url)).disable_drag_drop_handler().title(title).inner_size(900.0, 700.0).min_inner_size(320.0, 240.0).build() {

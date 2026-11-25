@@ -71,6 +71,10 @@ pub fn routes() -> Router<St> {
         .route("/meta/info/image", post(info_image).layer(DefaultBodyLimit::max(30 * 1024 * 1024)))
         .route("/meta/info/source-image/{id}", get(info_source_image))
         .route("/ui/window", post(ui_window))
+        .route("/ui/popouts", get(popouts))
+        .route("/ui/popout/beat", post(popout_beat))
+        .route("/ui/popout/closed", post(popout_closed))
+        .route("/ui/popout/return", post(popout_return))
 }
 
 /// Veřejné cesty bez tokenu (přijímače, RadioDNS, web).
@@ -500,14 +504,56 @@ async fn cover(State(o): State<St>, Path(id): Path<i64>) -> ApiResult {
 }
 
 #[derive(Deserialize)]
-struct WinReq { panel: String, #[serde(default)] title: String }
+struct WinReq { panel: String, #[serde(default)] title: String, #[serde(default)] owner: String }
+
+fn valid_id(s: &str) -> bool { !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') }
 
 /// Samostatné okno s panelem (desktop: nativní okno, prohlížeč: UI otevře window.open).
 async fn ui_window(State(o): State<St>, Json(w): Json<WinReq>) -> ApiResult {
-    if !w.panel.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || w.panel.is_empty() { return Err(bad("neplatný panel")); }
+    if !valid_id(&w.panel) { return Err(bad("neplatný panel")); }
     let hook = o.window_hook.read().clone();
     match hook {
-        Some(h) => { h(&w.panel, if w.title.is_empty() { &w.panel } else { &w.title }).map_err(|e| bad(&e))?; Ok(Json(json!({"ok": true, "native": true})).into_response()) }
+        Some(h) => { h("open", &w.panel, if w.title.is_empty() { &w.panel } else { &w.title }, &w.owner).map_err(|e| bad(&e))?; Ok(Json(json!({"ok": true, "native": true})).into_response()) }
         None => Ok(Json(json!({"ok": true, "native": false})).into_response()),
     }
+}
+
+// ---- vyjmuté panely: samostatné okno posílá „jsem otevřené“, studio podle toho panel skryje
+// klíč = (owner = id okna studia, panel); hodnota = poslední signál a požadavek na návrat
+static POPOUTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String), (std::time::Instant, bool)>>> = std::sync::LazyLock::new(Default::default);
+
+#[derive(Deserialize)]
+struct PopReq { owner: String, panel: String }
+#[derive(Deserialize)]
+struct PopQuery { owner: String }
+
+/// Signál z okna panelu (každé 2 s). Odpověď `close: true` = studio chce panel zpět → okno se zavře.
+async fn popout_beat(Json(r): Json<PopReq>) -> ApiResult {
+    if !valid_id(&r.owner) || !valid_id(&r.panel) { return Err(bad("neplatné id")); }
+    let mut m = POPOUTS.lock().unwrap_or_else(|e| e.into_inner());
+    let e = m.entry((r.owner, r.panel)).or_insert((std::time::Instant::now(), false));
+    e.0 = std::time::Instant::now();
+    Ok(Json(json!({ "close": e.1 })).into_response())
+}
+
+/// Okno panelu se zavírá (tlačítko Vrátit do studia nebo zavření okna).
+async fn popout_closed(Json(r): Json<PopReq>) -> ApiResult {
+    POPOUTS.lock().unwrap_or_else(|e| e.into_inner()).remove(&(r.owner, r.panel));
+    ok()
+}
+
+/// Studio: vrátit panel – okno se zavře (nativní hned, v prohlížeči při dalším signálu).
+async fn popout_return(State(o): State<St>, Json(r): Json<PopReq>) -> ApiResult {
+    if !valid_id(&r.panel) { return Err(bad("neplatný panel")); }
+    if let Some(e) = POPOUTS.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&(r.owner.clone(), r.panel.clone())) { e.1 = true; }
+    if let Some(h) = o.window_hook.read().clone() { let _ = h("close", &r.panel, "", &r.owner); }
+    ok()
+}
+
+/// Studio: které panely jsou právě v samostatném okně.
+async fn popouts(Query(q): Query<PopQuery>) -> ApiResult {
+    let mut m = POPOUTS.lock().unwrap_or_else(|e| e.into_inner());
+    m.retain(|_, v| v.0.elapsed() < std::time::Duration::from_secs(30));
+    let list: Vec<String> = m.iter().filter(|(k, v)| k.0 == q.owner && !v.1 && v.0.elapsed() < std::time::Duration::from_secs(6)).map(|(k, _)| k.1.clone()).collect();
+    Ok(Json(json!(list)).into_response())
 }
