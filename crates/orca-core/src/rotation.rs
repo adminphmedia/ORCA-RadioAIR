@@ -25,6 +25,11 @@ pub struct Exclusions {
 
 /// Vybere skladbu pro krok clocku. Vrací skladbu a zdůvodnění výběru.
 pub fn select(db: &Db, auto: &AutoConfig, step: &ClockStep, backup_category: &str, excl: &Exclusions) -> Result<Option<(Track, String)>> {
+    // pevný soubor: vždy tentýž (znělka, ID stanice…) – jen musí existovat, být zapnutý a platný
+    if let Some(id) = step.track_id {
+        let at = excl.at.unwrap_or_else(|| chrono::Local::now().naive_local());
+        return Ok(db.get_track(id)?.filter(|t| t.enabled && !t.missing && t.valid_at(at)).map(|t| (t, "pevný soubor".to_string())));
+    }
     let is_song = step.kind == TrackKind::Song;
     let song_since = if is_song { utc_minus_minutes(auto.song_separation_min as i64) } else { "9999".into() };
     let mut artists_recent: HashSet<String> = excl.artists.clone();

@@ -421,7 +421,11 @@ where D: serde::Deserializer<'de>, T: Deserialize<'de> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CategoryCount { pub kind: String, pub category: String, pub count: i64 }
+pub struct CategoryCount {
+    pub kind: String, pub category: String, pub count: i64,
+    /// průměrná / nejkratší / nejdelší vysílací délka (od cue-in po mix, jinak po cue-out) zapnutých souborů
+    pub avg_ms: i64, pub min_ms: i64, pub max_ms: i64,
+}
 
 pub const TRACK_COLS: &str = "id,kind,path,filename,artist,title,album,year,genre,category,category2,category3,duration_ms,cue_in_ms,intro_ms,mix_ms,cue_out_ms,hook_in_ms,hook_out_ms,gain_db,lufs,analyzed,manual_cues,enabled,missing,playlister_code,isrc,composer,publisher,added_at,updated_at,last_played_at,play_count,vocal,properties,color,comment,separation_min,cover_path,bookmarked,bed_intro_ms,bed_outro_ms,bed_level_db,bed_fade_ms,outro_ms,lyricist,label,valid_from,valid_to,valid_days,valid_hours,presenter_notes,notes_source";
 
@@ -707,8 +711,9 @@ impl Db {
 
     pub fn categories(&self) -> Result<Vec<CategoryCount>> {
         let c = self.conn.lock();
-        let mut st = c.prepare("SELECT kind, category, COUNT(*) FROM tracks WHERE missing=0 GROUP BY kind, category ORDER BY kind, category")?;
-        let v = st.query_map([], |r| Ok(CategoryCount { kind: r.get(0)?, category: r.get(1)?, count: r.get(2)? }))?
+        let len = "CASE WHEN mix_ms > cue_in_ms THEN mix_ms - cue_in_ms WHEN cue_out_ms > cue_in_ms THEN cue_out_ms - cue_in_ms ELSE duration_ms END";
+        let mut st = c.prepare(&format!("SELECT kind, category, COUNT(*), CAST(COALESCE(AVG(CASE WHEN enabled=1 THEN {len} END),0) AS INTEGER), COALESCE(MIN(CASE WHEN enabled=1 THEN {len} END),0), COALESCE(MAX(CASE WHEN enabled=1 THEN {len} END),0) FROM tracks WHERE missing=0 GROUP BY kind, category ORDER BY kind, category"))?;
+        let v = st.query_map([], |r| Ok(CategoryCount { kind: r.get(0)?, category: r.get(1)?, count: r.get(2)?, avg_ms: r.get(3)?, min_ms: r.get(4)?, max_ms: r.get(5)? }))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(v)
     }

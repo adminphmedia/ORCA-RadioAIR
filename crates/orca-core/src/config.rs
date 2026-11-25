@@ -271,6 +271,9 @@ pub struct ClockStep {
     /// Krok Stitcheru místo souboru: hooks | time | news
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stitch: Option<String>,
+    /// Pevný konkrétní soubor (např. znělka) místo výběru z kategorie
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,7 +288,7 @@ pub struct Clock {
 
 impl Default for Clock {
     fn default() -> Self {
-        Self { name: "Default".into(), color: "#3b82f6".into(), steps: vec![ClockStep { kind: TrackKind::Song, category: String::new(), position: None, stitch: None }], backup_category: String::new() }
+        Self { name: "Default".into(), color: "#3b82f6".into(), steps: vec![ClockStep { kind: TrackKind::Song, category: String::new(), position: None, stitch: None, track_id: None }], backup_category: String::new() }
     }
 }
 

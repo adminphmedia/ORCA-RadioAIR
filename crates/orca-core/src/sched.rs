@@ -427,7 +427,7 @@ pub fn select_track(db: &Db, cfg: &Config, it: &PlItem, excl: &HashSet<i64>) -> 
             pool.choose(&mut rand::thread_rng()).map(|t| ((*t).clone(), format!("{} / {cat_l}: náhodně", kind.as_str())))
         }
         _ => {
-            let step = crate::config::ClockStep { kind, category: cat.clone(), position: None, stitch: None };
+            let step = crate::config::ClockStep { kind, category: cat.clone(), position: None, stitch: None, track_id: None };
             let ex = Exclusions { track_ids: excl.clone(), artists: HashSet::new(), at: None };
             select(db, &cfg.auto, &step, "", &ex)?
         }
