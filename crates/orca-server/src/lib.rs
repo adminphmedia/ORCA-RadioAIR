@@ -113,11 +113,26 @@ pub fn router(orca: St) -> Router {
     app = match ui_dir {
         Some(d) if d.join("index.html").is_file() => {
             log::info!("UI ze složky {}", d.display());
-            app.fallback_service(ServeDir::new(&d).fallback(ServeFile::new(d.join("index.html"))))
+            // /assets: soubory s hashem v názvu – chybějící = 404 (ne index.html), jinak by stará stránka po aktualizaci
+            // dostala HTML místo skriptu a spadla; ostatní cesty = SPA (index.html)
+            app.nest_service("/assets", ServeDir::new(d.join("assets")))
+                .fallback_service(ServeDir::new(&d).fallback(ServeFile::new(d.join("index.html"))))
+                .layer(middleware::from_fn(ui_cache_headers))
         }
         _ => app.fallback(|| async { Html(FALLBACK_UI) }),
     };
     app.layer(cors).with_state(orca)
+}
+
+/// Cache pro UI: index.html a ostatní soubory vždy znovu ověřit (po aktualizaci aplikace se hned načte nová verze),
+/// soubory v /assets mají v názvu hash → mohou se cachovat natrvalo.
+async fn ui_cache_headers(req: axum::extract::Request, next: middleware::Next) -> Response {
+    let path = req.uri().path().to_string();
+    let mut res = next.run(req).await;
+    if path.starts_with("/api") || res.headers().contains_key(header::CACHE_CONTROL) { return res; }
+    let v = if path.starts_with("/assets/") && res.status().is_success() { "public, max-age=31536000, immutable" } else { "no-cache, must-revalidate" };
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(v));
+    res
 }
 
 async fn auth(State(o): State<St>, headers: HeaderMap, req: Request, next: Next) -> Response {

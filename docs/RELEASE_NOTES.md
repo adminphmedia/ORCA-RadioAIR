@@ -1,3 +1,9 @@
+# ORCA RadioAIR 0.7.4 – testovací verze
+
+## Opravy v 0.7.4
+- **Chyba „This page didn't load“ při prvním otevření po instalaci nové verze:** okno aplikace drželo v mezipaměti stránku předchozí verze, která odkazovala na už neexistující soubory. Engine teď stránku vždy načítá čerstvou (soubory s hashem cachuje natrvalo, chybějící vrací 404 místo stránky) a aplikace se v takovém případě sama jednou obnoví.
+- Chybová obrazovka je česky, ukazuje text chyby a tlačítko Načíst znovu; vysílání chyba obrazovky neovlivní.
+
 # ORCA RadioAIR 0.7.3 – testovací verze
 
 ## Novinky v 0.7.3
