@@ -1,3 +1,10 @@
+# ORCA RadioAIR 0.7.9 – testovací verze
+
+## Oprava: studio se nenačetlo („Obrazovku se nepodařilo načíst“, React #185)
+- V rozložení studia Široké a Maximum se obrazovka zacyklila na panelu Jingly (stejná chyba hrozila u Streamů). Opraveno.
+- Pojistka: chyba v jednom panelu studia už neshodí celou obrazovku – panel ukáže hlášku s tlačítkem Zkusit znovu.
+- Chybová obrazovka má tlačítko Výchozí rozložení studia.
+
 # ORCA RadioAIR 0.7.8 – testovací verze
 
 ## Časomíra (odpočet v přesný čas)
