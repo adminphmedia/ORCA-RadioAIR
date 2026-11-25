@@ -252,30 +252,32 @@ impl VideoManager {
         let policy = cfg.library.on_duplicate.clone();
         let dest = crate::library::unique_path(&dir, &fname, if policy == "skip" { "rename" } else { &policy }).ok_or_else(|| anyhow::anyhow!("cílový soubor už existuje"))?;
         let tmp = dir.join(format!(".orca-video-{}.{ext}", uuid::Uuid::new_v4().simple()));
-        let args = ffmpeg_args(&c, src, &tmp, &stem, dur.unwrap_or(0.0));
-        let mut cmd = Command::new(&ffmpeg);
-        cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        no_window(&mut cmd);
-        let mut child = cmd.spawn()
-            .map_err(|e| anyhow::anyhow!("ffmpeg nelze spustit ({}): {e}", ffmpeg.display()))?;
-        let err_tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
-        if let Some(se) = child.stderr.take() {
-            let t = err_tail.clone();
-            std::thread::spawn(move || for l in std::io::BufReader::new(se).lines().map_while(Result::ok) { let mut q = t.lock(); q.push_back(l); if q.len() > 6 { q.pop_front(); } });
-        }
-        if let Some(so) = child.stdout.take() {
-            for l in std::io::BufReader::new(so).lines().map_while(Result::ok) {
-                if let (Some(v), Some(d)) = (l.strip_prefix("out_time_us="), dur) {
-                    if let Ok(us) = v.trim().parse::<f64>() { if d > 0.0 { self.progress.lock().insert(name.to_string(), ((us / 1e6 / d) * 100.0).clamp(0.0, 99.0) as u8); } }
+        // Úpravy zvuku se v různých verzích ffmpeg chovají různě (a u velmi krátkých nebo tichých videí mohou selhat).
+        // Proto postupně: plná úprava → bez ořezu ticha → jen převod. Převod se tak podaří vždy, když video má zvuk.
+        let mut variants = vec![(c.clone(), "")];
+        if c.trim_silence { let mut v = c.clone(); v.trim_silence = false; variants.push((v, "bez oříznutí ticha")); }
+        if c.trim_silence || c.normalize || c.speech { let mut v = c.clone(); v.trim_silence = false; v.normalize = false; v.speech = false; variants.push((v, "bez úprav zvuku")); }
+        let mut first_err = String::new();
+        let mut note = "";
+        let mut ok = false;
+        for (v, label) in &variants {
+            let args = ffmpeg_args(v, src, &tmp, &stem, dur.unwrap_or(0.0));
+            match self.run_ffmpeg(&ffmpeg, &args, name, dur) {
+                Ok(()) if tmp.is_file() && std::fs::metadata(&tmp).map(|m| m.len() > 0).unwrap_or(false) => { ok = true; note = label; break; }
+                Ok(()) => { if first_err.is_empty() { first_err = "výstup je prázdný".into(); } }
+                Err(e) => {
+                    log::warn!("převod videa {name} ({}): {e}", if label.is_empty() { "plná úprava" } else { label });
+                    if e.contains("does not contain any stream") || e.contains("matches no streams") || e.contains("Output file #0 does not contain") || e.contains("Stream map '0:a:0'") {
+                        let _ = std::fs::remove_file(&tmp);
+                        anyhow::bail!("video nemá zvukovou stopu");
+                    }
+                    if first_err.is_empty() { first_err = e; }
                 }
             }
-        }
-        let ok = child.wait()?.success();
-        if !ok || !tmp.is_file() {
             let _ = std::fs::remove_file(&tmp);
-            let d = err_tail.lock().iter().cloned().collect::<Vec<_>>().join(" | ");
-            anyhow::bail!(if d.contains("does not contain any stream") || d.contains("Output file #0 does not contain") { "video nemá zvukovou stopu".to_string() } else { format!("ffmpeg: {d}") });
         }
+        if !ok { let _ = std::fs::remove_file(&tmp); anyhow::bail!("ffmpeg: {}", short_err(&first_err)); }
+        if !note.is_empty() { log::info!("video {name}: převedeno {note}"); self.events.alert("info", "video_export_fallback", format!("Video {name}: převedeno {note} (úprava zvuku s touto verzí ffmpeg nebo u tohoto videa nešla).")); }
         std::fs::rename(&tmp, &dest)?;
         let out = dest.to_string_lossy().to_string();
         let mut track = None;
@@ -287,6 +289,35 @@ impl VideoManager {
         }
         Ok((out, track))
     }
+}
+
+impl VideoManager {
+    fn run_ffmpeg(&self, ffmpeg: &Path, args: &[String], name: &str, dur: Option<f64>) -> Result<(), String> {
+        let mut cmd = Command::new(ffmpeg);
+        cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        no_window(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("ffmpeg nelze spustit ({}): {e}", ffmpeg.display()))?;
+        let err = Arc::new(Mutex::new(Vec::<String>::new()));
+        let errh = child.stderr.take().map(|se| { let t = err.clone(); std::thread::spawn(move || for l in std::io::BufReader::new(se).lines().map_while(Result::ok) { let mut q = t.lock(); if q.len() < 80 { q.push(l); } }) });
+        if let Some(so) = child.stdout.take() {
+            for l in std::io::BufReader::new(so).lines().map_while(Result::ok) {
+                if let (Some(v), Some(d)) = (l.strip_prefix("out_time_us="), dur) {
+                    if let Ok(us) = v.trim().parse::<f64>() { if d > 0.0 { self.progress.lock().insert(name.to_string(), ((us / 1e6 / d) * 100.0).clamp(0.0, 99.0) as u8); } }
+                }
+            }
+        }
+        let st = child.wait().map_err(|e| e.to_string())?;
+        if let Some(h) = errh { let _ = h.join(); }
+        if st.success() { Ok(()) } else { Err(err.lock().join(" | ")) }
+    }
+}
+
+/// Z dlouhého výpisu ffmpeg jen podstatné řádky (první chyba).
+fn short_err(e: &str) -> String {
+    let parts: Vec<&str> = e.split(" | ").filter(|l| !l.contains("Terminating thread") && !l.contains("Task finished with error")).collect();
+    let mut out = parts.iter().take(3).cloned().collect::<Vec<_>>().join(" | ");
+    if out.is_empty() { out = e.chars().take(300).collect(); }
+    out.chars().take(400).collect()
 }
 
 /// Windows: ffmpeg bez okna konzole.

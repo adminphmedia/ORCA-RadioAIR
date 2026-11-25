@@ -1,3 +1,9 @@
+# ORCA RadioAIR 0.7.6 – testovací verze
+
+## Opravy v 0.7.6
+- **Video → zvuk:** s novějšími verzemi ffmpeg (7/8 na macOS) mohla úprava zvuku skončit chybou „Invalid argument / Could not open encoder“. Převod teď při selhání úprav automaticky zkusí bez oříznutí ticha a pak jako čistý převod – zvuk z videa se tak převede vždy, když video zvukovou stopu má (ORCA upozorní, která úprava se vynechala).
+- Video bez zvukové stopy hlásí srozumitelně „video nemá zvukovou stopu“; chybová hlášení jsou kratší (jen podstatné řádky).
+
 # ORCA RadioAIR 0.7.5 – testovací verze
 
 ## Novinky v 0.7.5
