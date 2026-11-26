@@ -40,6 +40,7 @@ pub fn routes() -> Router<St> {
         .route("/monitor/stop", post(monitor_stop))
         .route("/monitor/status", get(monitor_status))
         .route("/monitor/route", get(monitor_route))
+        .route("/fx", get(fx_status))
         .route("/nowplaying/services", get(np_services))
         .route("/nowplaying/services/test", post(np_service_test))
 }
@@ -239,6 +240,8 @@ async fn monitor_play(State(o): State<St>, Json(r): Json<MonReq>) -> ApiResult {
     ok()
 }
 async fn monitor_stop(State(o): State<St>) -> ApiResult { o.monitor.stop(); ok() }
+async fn fx_status() -> ApiResult { Ok(Json(json!(orca_core::fx::status())).into_response()) }
+
 async fn np_services() -> ApiResult { Ok(Json(json!(orca_core::npservices::statuses())).into_response()) }
 
 #[derive(serde::Deserialize)]

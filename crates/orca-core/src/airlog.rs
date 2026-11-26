@@ -305,7 +305,7 @@ impl AirLogger {
         let res: Result<()> = (|| {
             if pcm_in {
                 let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("ffmpeg bez vstupu"))?;
-                let (rx, _guard) = if d.source == "input" { let (rx, g) = open_input(&d.device)?; (rx, Some(g)) } else { (self.engine.add_tap(), None) };
+                let (rx, _guard) = if d.source == "input" { let (rx, g) = open_input(&d.device)?; (rx, Some(g)) } else { ({ let c = self.cfg.read().clone(); crate::fx::tap_for(&self.engine, &c, "logger") }, None) };
                 let mut bytes: Vec<u8> = Vec::with_capacity(16384);
                 loop {
                     if stop.load(Ordering::Relaxed) { return Ok(()); }
@@ -668,7 +668,7 @@ impl Silence {
 
 // Vstup zvukové karty (FM přijímač, odposlech éteru)
 type InputGuard = Arc<AtomicBool>;
-struct InputStop(InputGuard);
+pub(crate) struct InputStop(InputGuard);
 impl Drop for InputStop { fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); } }
 
 fn find_input(name: &str) -> Result<cpal::Device> {
@@ -677,12 +677,12 @@ fn find_input(name: &str) -> Result<cpal::Device> {
     if name.is_empty() { return host.default_input_device().ok_or_else(|| anyhow!("v počítači není žádný zvukový vstup")); }
     host.input_devices()?.find(|d| d.name().map(|n| n == name).unwrap_or(false)).ok_or_else(|| anyhow!("vstup „{name}“ nenalezen"))
 }
-fn input_rate(name: &str) -> Result<u32> {
+pub(crate) fn input_rate(name: &str) -> Result<u32> {
     use cpal::traits::DeviceTrait;
     Ok(find_input(name)?.default_input_config()?.sample_rate().0)
 }
 
-fn open_input(name: &str) -> Result<(crossbeam_channel::Receiver<Arc<Vec<f32>>>, InputStop)> {
+pub(crate) fn open_input(name: &str) -> Result<(crossbeam_channel::Receiver<Arc<Vec<f32>>>, InputStop)> {
     use cpal::traits::{DeviceTrait, StreamTrait};
     use cpal::SampleFormat;
     let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(400);

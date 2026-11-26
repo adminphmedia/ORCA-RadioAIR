@@ -211,7 +211,8 @@ impl EncoderManager {
                 });
             }
             let mut stdin = child.stdin.take().unwrap();
-            let rx = self.engine.add_tap();
+            // zdroj: program ORCA, nebo zpracovaný návrat z externích efektů (s pojistkou)
+            let rx = { let c = self.cfg.read().clone(); crate::fx::tap_for(&self.engine, &c, "streams") };
             let started = Instant::now();
             let mut live = false;
             let bytes = AtomicU64::new(0);
@@ -235,6 +236,7 @@ impl EncoderManager {
                         }
                         processed_buf.clear();
                         match branch.as_mut() {
+                            _ if crate::fx::skip_internal_now() => processed_buf.extend_from_slice(&block),
                             Some(b) => b.process(&block, &mut processed_buf),
                             None => {
                                 // master processing bez výstupní větve: bezpečnostní soft clip

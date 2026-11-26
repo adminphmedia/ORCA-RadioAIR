@@ -43,6 +43,7 @@ pub mod business;
 pub mod countdown;
 pub mod airlog;
 pub mod npservices;
+pub mod fx;
 pub mod storage;
 pub mod weather;
 
@@ -140,6 +141,7 @@ impl Orca {
         if let Err(e) = catalog::ensure_default_palette(&db) { log::warn!("palety: {e}"); }
         match ads::migrate_text_clients(&db) { Ok(n) if n > 0 => log::info!("reklama: převedeno {n} klientů do databáze klientů"), Err(e) => log::warn!("klienti: {e}"), _ => {} }
         let encoders = encoder::EncoderManager::new(engine.clone(), cfg.clone(), events.clone());
+        let _fx = fx::FxManager::start(cfg.clone(), engine.clone(), events.clone());
         let airlog = airlog::AirLogger::start(data_dir.to_path_buf(), cfg.clone(), engine.clone(), events.clone());
         {
             // záznamy pořadů určené do knihovny (repríza)
