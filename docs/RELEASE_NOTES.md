@@ -1,4 +1,11 @@
-# ORCA RadioAIR 0.9.0 – testovací verze
+# ORCA RadioAIR 0.9.0
+
+## Manuál a nápověda pro úplné začátečníky
+- Každý článek manuálu začíná rámečkem „Jednoduše řečeno“ (co to je a k čemu to je), pak následuje podrobný postup krok za krokem a přehled „Co která volba dělá“.
+- Nové články: Úplně od začátku (jak vysílat s ORCA, když jste nikdy nepoužívali odbavovací program; jak vypadá běžný den) a Slovníček pojmů (jingle, sweeper, voice track, cue body, clock, rotace, stream, mount, LUFS, RDS, DAB+…).
+- Rozšířené články: reklamní bloky, programová mřížka, události, plán vysílání, Stitcher, rebroadcast, texty stanice, DAB+, RDS, now playing, audio, log, hlídání ticha, vlastní logy, zálohy, pořady, streamy, uživatelé, nahrávání, úpravy knihovny, spuštění a řešení problémů.
+- Nápověda pod každou částí ovládacího panelu má jednoduché vysvětlení a postup.
+
 
 ## Nové: Propojení počítačů – záložní a přípravný počítač
 - Role počítače: samostatný, hlavní vysílací, záložní vysílací, přípravný. Spojení chráněné společným klíčem (port 8770).
