@@ -1,5 +1,14 @@
 # ORCA RadioAIR 0.9.1
 
+## Ctrl+S / Cmd+S = Uložit v celé aplikaci
+- Zkratka uloží změny všude, kde je tlačítko Uložit (ovládací panel, playlisty, pořady, okna úprav). V otevřeném okně se uloží to okno.
+
+## Jednotné plánování: clocky a playlisty stejně
+- Kroky clocku se přidávají stejným editorem jako položky playlistu: výběr z kategorie, konkrétní soubor, Stitcher, časomíra, podkres, živý vstup, poznámka, epizoda, rebroadcast. Pořadí tažením nebo šipkami.
+- Nová položka Autofill do celé hodiny (playlisty, clocky, plán vysílání): v okamžiku vysílání doplní skladby z vybrané kategorie tak, aby hodina skončila co nejpřesněji. Je vždy poslední. V clocku po něm začíná další hodina.
+- Odhad do celé hodiny u playlistů, clocků i plánu: délka každé položky, čas začátku v hodině, kolik zbývá do celé hodiny a co doplní autofill.
+- Výběr souboru (např. při přidávání do playlistu) je barevně odlišený podle kategorií.
+
 ## Oprava: dva zvuky přes sebe (reportáž se sama spustila přes skladbu)
 - Voice track nebo sweeper s umístěním přes skladbu (Na začátek, Přes konec, Mezi skladbami) se teď přes skladbu položí jen tehdy, když se vejde do intra nebo do dojezdu skladby (bez zpěvu). Položky delší než 60 s (reportáže, rozhovory) se přes skladbu nekladou nikdy.
 - Co se nevejde, zahraje se samostatně po skladbě – ve frontě je u položky důvod „hraje samostatně“. Dříve dlouhá reportáž v knihovně Voice tracky začala hrát přes rozehranou skladbu (např. po 30 s).

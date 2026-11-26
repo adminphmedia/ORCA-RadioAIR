@@ -185,7 +185,8 @@ async fn episode_queue(State(o): State<St>, Path(id): Path<i64>, Json(q): Json<Q
     let e = sched::get_episode(&o.db, id)?.ok_or_else(|| not_found("epizoda"))?;
     let cfg = o.cfg.read().clone();
     let show = sched::get::<Show>(&o.db, e.show_id)?.map(|s| s.name).unwrap_or_default();
-    let (items, _, warnings) = sched::expand(&o.db, &cfg, &e.parts, "manual", &format!("{show} – díl {} {} (ručně)", e.num, e.title), 0)?;
+    let start = o.automation.start_for(&q.position);
+    let (items, _, warnings) = sched::expand_at(&o.db, &cfg, &e.parts, "manual", &format!("{show} – díl {} {} (ručně)", e.num, e.title), 0, Some(start))?;
     if items.is_empty() { return Err(bad("epizoda nemá žádné přehratelné části")); }
     let n = push_items(&o, items, &q.position);
     if q.mark_aired.unwrap_or(true) { sched::mark_episode_aired(&o.db, id)?; }
@@ -203,7 +204,8 @@ async fn playlist_queue(State(o): State<St>, Path(id): Path<i64>, Json(q): Json<
     let mut p = sched::get::<Playlist>(&o.db, id)?.ok_or_else(|| not_found("playlist"))?;
     if p.shuffle { sched::shuffle(&mut p.items); }
     let cfg = o.cfg.read().clone();
-    let (items, aired, warnings) = sched::expand(&o.db, &cfg, &p.items, "playlist", &format!("playlist {} (ručně)", p.name), 0)?;
+    let start = o.automation.start_for(&q.position);
+    let (items, aired, warnings) = sched::expand_at(&o.db, &cfg, &p.items, "playlist", &format!("playlist {} (ručně)", p.name), 0, Some(start))?;
     if items.is_empty() { return Err(bad("playlist nemá žádné přehratelné položky")); }
     let n = push_items(&o, items, &q.position);
     for e in aired { let _ = sched::mark_episode_aired(&o.db, e); }

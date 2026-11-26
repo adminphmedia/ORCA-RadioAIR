@@ -46,6 +46,8 @@ pub struct Automation {
     mode: RwLock<Mode>,
     log_ids: Mutex<HashMap<String, (i64, Instant)>>,
     cursor: Mutex<(String, usize)>,
+    /// Hodina, kterou už autofill doplnil do konce – další položky se berou z clocku následující hodiny.
+    closed_hour: Mutex<Option<String>>,
     history: Mutex<VecDeque<(String, Track)>>,
     last_no_tracks_alert: Mutex<Option<Instant>>,
     last_sched: Mutex<Option<Instant>>,
@@ -75,7 +77,7 @@ impl Automation {
         let mode = if cfg.read().auto.start_in_auto { Mode::Auto } else { Mode::Manual };
         let a = Arc::new(Self {
             db, cfg, engine, encoders, events: events.clone(), np: NowPlayingWriter { data_dir }, mode: RwLock::new(mode),
-            log_ids: Mutex::new(HashMap::new()), cursor: Mutex::new((String::new(), 0)), history: Mutex::new(VecDeque::new()),
+            log_ids: Mutex::new(HashMap::new()), cursor: Mutex::new((String::new(), 0)), closed_hour: Mutex::new(None), history: Mutex::new(VecDeque::new()),
             last_no_tracks_alert: Mutex::new(None), last_sched: Mutex::new(None), last_maint: Mutex::new(None), countdowns: Mutex::new(vec![]),
         });
         let rx = events.subscribe();
@@ -174,6 +176,19 @@ impl Automation {
             t += chrono::Duration::milliseconds(it.slot_ms());
         }
         q
+    }
+
+    /// Kdy začne položka vložená na místo `position` (now | next | end) – pro autofill do celé hodiny.
+    pub fn start_for(&self, position: &str) -> DateTime<Local> {
+        let cfg = self.cfg.read().clone();
+        match position {
+            "now" => now_local(&cfg),
+            "end" => { let q = self.queue_with_eta(); self.queue_end(&q, &cfg) }
+            _ => {
+                let st = self.engine.snapshot();
+                now_local(&cfg) + chrono::Duration::milliseconds(st.current.map(|c| (c.mix_at_ms - c.position_ms).max(0)).unwrap_or(0))
+            }
+        }
     }
 
     /// Kdy dohraje poslední položka fronty.
@@ -471,7 +486,8 @@ impl Automation {
         let q = self.queue_with_eta();
         if !immediate && self.queue_end(&q, cfg) < t { return Ok(()); }
         if immediate && !due { return Ok(()); }
-        let (qitems, aired, warnings) = sched::expand(&self.db, cfg, &items, "playlist", &reason_base, 0)?;
+        let start = if immediate { now_local(cfg) } else { self.queue_end(&q, cfg).max(t) };
+        let (qitems, aired, warnings) = sched::expand_at(&self.db, cfg, &items, "playlist", &reason_base, 0, Some(start))?;
         for w in warnings { self.events.alert("warning", "sched_item", format!("{reason_base}: {w}")); }
         if qitems.is_empty() { return sched::mark_fired(&self.db, &o.key); }
         let n = qitems.len();
@@ -534,7 +550,7 @@ impl Automation {
                 match crate::sched::plan_take(&self.db, &slot_time) {
                     Ok(Some(it)) => {
                         let reason = format!("plán vysílání {}", slot_time.format("%d.%m. %H:00"));
-                        match crate::sched::expand(&self.db, &cfg, std::slice::from_ref(&it), "plan", &reason, 0) {
+                        match crate::sched::expand_at(&self.db, &cfg, std::slice::from_ref(&it), "plan", &reason, 0, Some(slot_time)) {
                             Ok((items, aired, _)) => {
                                 for i in items { self.engine.queue_push(i, None); }
                                 for e in aired { let _ = crate::sched::mark_episode_aired(&self.db, e); }
@@ -570,9 +586,14 @@ impl Automation {
                     Err(e) => log::error!("selector: {e}"),
                 }
             }
-            let Some(clock) = clock_for(&cfg, &slot_time) else { return };
+            // hodinu už doplnil autofill → pokračuje clock další hodiny (začne o pár sekund dřív)
+            let hour_id = |t: &DateTime<Local>| t.format("%Y%m%d%H").to_string();
+            let clock_time = if self.closed_hour.lock().as_deref() == Some(hour_id(&slot_time).as_str()) {
+                slot_time + chrono::Duration::milliseconds(crate::sched::until_hour_end(&slot_time) + 1)
+            } else { slot_time };
+            let Some(clock) = clock_for(&cfg, &clock_time) else { return };
             if clock.steps.is_empty() { return; }
-            let key = format!("{}|{}", grid_key(&slot_time), clock.name);
+            let key = format!("{}|{}|{}", grid_key(&clock_time), clock_time.format("%Y%m%d"), clock.name);
             let step_idx = {
                 let mut c = self.cursor.lock();
                 if c.0 != key { *c = (key.clone(), 0); }
@@ -581,6 +602,34 @@ impl Automation {
                 i
             };
             let step = &clock.steps[step_idx];
+            // krok jako položka playlistu (autofill, časomíra, živý vstup, poznámka, podkres, epizoda…)
+            if let Some(item) = &step.item {
+                let why = format!("clock '{}', krok {}", clock.name, step_idx + 1);
+                if item.typ == "autofill" {
+                    // doplnit do konce hodiny a hodinu uzavřít
+                    let mut fill = item.clone();
+                    if fill.kind.is_none() { fill.kind = Some(crate::model::TrackKind::Song); }
+                    match crate::sched::expand_at(&self.db, &cfg, std::slice::from_ref(&fill), "auto", &why, 0, Some(clock_time)) {
+                        Ok((items, _, warnings)) => {
+                            for w in warnings { self.events.alert("warning", "autofill", format!("{why}: {w}")); }
+                            for i in items { self.engine.queue_push(i, None); }
+                        }
+                        Err(e) => log::error!("autofill: {e}"),
+                    }
+                    *self.closed_hour.lock() = Some(hour_id(&clock_time));
+                    // kurzor nové hodiny začne od kroku 1
+                    continue;
+                }
+                match crate::sched::expand_at(&self.db, &cfg, std::slice::from_ref(item), "auto", &why, 0, Some(clock_time)) {
+                    Ok((items, aired, warnings)) => {
+                        for w in warnings { self.events.alert("warning", "clock_item", format!("{why}: {w}")); }
+                        for i in items { self.engine.queue_push(i, None); }
+                        for e in aired { let _ = crate::sched::mark_episode_aired(&self.db, e); }
+                    }
+                    Err(e) => log::error!("{why}: {e}"),
+                }
+                continue;
+            }
             if let Some(kind) = &step.stitch {
                 let est = match crate::stitcher::resolve(&self.db, &cfg, kind, &q, slot_time) { Ok(p) => p.total_ms(), Err(_) => 0 };
                 if est > 0 {

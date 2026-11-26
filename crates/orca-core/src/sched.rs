@@ -435,12 +435,49 @@ pub fn select_track(db: &Db, cfg: &Config, it: &PlItem, excl: &HashSet<i64>) -> 
             pool.choose(&mut rand::thread_rng()).map(|t| ((*t).clone(), format!("{} / {cat_l}: náhodně", kind.as_str())))
         }
         _ => {
-            let step = crate::config::ClockStep { kind, category: cat.clone(), position: None, stitch: None, track_id: None };
+            let step = crate::config::ClockStep { kind, category: cat.clone(), position: None, stitch: None, track_id: None, item: None };
             let ex = Exclusions { track_ids: excl.clone(), artists: HashSet::new(), at: None };
             select(db, &cfg.auto, &step, "", &ex)?
         }
     };
     Ok(r)
+}
+
+/// Kolik ms zbývá do konce hodiny, ve které je čas `at`.
+pub fn until_hour_end(at: &chrono::DateTime<chrono::Local>) -> i64 {
+    use chrono::Timelike;
+    let secs = at.minute() as i64 * 60 + at.second() as i64;
+    (3600 - secs) * 1000 - at.timestamp_subsec_millis() as i64
+}
+
+/// Autofill: skladby z kategorie, které co nejlépe vyplní zbývající čas do konce hodiny.
+/// Bere nejdéle nehrané, vždy tu nejdelší, která se ještě vejde (s tolerancí 3 s); stejný interpret se neopakuje.
+pub fn autofill_tracks(db: &Db, kind: TrackKind, category: &str, remaining_ms: i64, excl: &HashSet<i64>, artists: &HashSet<String>) -> Result<Vec<Track>> {
+    const TOL: i64 = 3_000;
+    const MIN_GAP: i64 = 8_000;
+    if remaining_ms < MIN_GAP { return Ok(vec![]); }
+    let all: Vec<Track> = db.with_conn(|c| -> Result<Vec<Track>> {
+        let mut st = c.prepare(&format!("SELECT {TRACK_COLS} FROM tracks WHERE kind=?1 AND (?2='' OR category=?2) AND enabled=1 AND missing=0 AND duration_ms>0 ORDER BY last_played_at IS NOT NULL, last_played_at ASC, play_count ASC LIMIT 400"))?;
+        Ok(st.query_map(params![kind.as_str(), category], row_track)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    })?;
+    let now = chrono::Local::now().naive_local();
+    let len = |t: &Track| { let (ci, mix, _) = t.effective_cues(); (mix - ci).max(0) };
+    let mut pool: Vec<&Track> = all.iter().filter(|t| !excl.contains(&t.id) && t.valid_at(now) && len(t) > 0).collect();
+    let mut used_artists: HashSet<String> = artists.clone();
+    let mut left = remaining_ms;
+    let mut out = vec![];
+    while left >= MIN_GAP {
+        // nejdelší, která se vejde; přednost má jiný interpret
+        let pick = |avoid: bool, pool: &Vec<&Track>| pool.iter().enumerate()
+            .filter(|(_, t)| len(t) <= left + TOL && (!avoid || t.artist.is_empty() || !used_artists.contains(&t.artist.to_lowercase())))
+            .max_by_key(|(_, t)| len(t)).map(|(i, _)| i);
+        let Some(i) = pick(true, &pool).or_else(|| pick(false, &pool)) else { break };
+        let t = pool.remove(i);
+        left -= len(t);
+        if !t.artist.is_empty() { used_artists.insert(t.artist.to_lowercase()); }
+        out.push(t.clone());
+    }
+    Ok(out)
 }
 
 /// Odhad délky položek (ms).
@@ -471,11 +508,34 @@ pub fn estimate_items(db: &Db, items: &[PlItem]) -> i64 {
 
 /// Rozvinutí položek na položky fronty. `episodes_aired` – epizody, které se tím odvysílají.
 pub fn expand(db: &Db, cfg: &Config, items: &[PlItem], source: &str, reason: &str, depth: u8) -> Result<(Vec<QueueItem>, Vec<i64>, Vec<String>)> {
-    let mut out = vec![];
+    expand_at(db, cfg, items, source, reason, depth, None)
+}
+
+/// Délka položky fronty pro výpočet času (překryvné položky čas neposouvají).
+fn q_len(q: &QueueItem) -> i64 { if q.is_attached_overlay() { 0 } else { q.slot_ms() } }
+
+/// Rozvinutí s vědomím času začátku (kvůli autofillu do celé hodiny). `start` = kdy začne první položka (None = teď).
+pub fn expand_at(db: &Db, cfg: &Config, items: &[PlItem], source: &str, reason: &str, depth: u8, start: Option<chrono::DateTime<chrono::Local>>) -> Result<(Vec<QueueItem>, Vec<i64>, Vec<String>)> {
+    let mut out: Vec<QueueItem> = vec![];
     let mut aired = vec![];
     let mut warnings = vec![];
     let mut excl: HashSet<i64> = HashSet::new();
+    let t0 = start.unwrap_or_else(|| crate::automation::now_local(cfg));
     for it in items {
+        if it.typ == "autofill" {
+            let at = t0 + chrono::Duration::milliseconds(out.iter().map(q_len).sum());
+            let remaining = until_hour_end(&at);
+            let mut artists = HashSet::new();
+            for q in &out { if !q.track.artist.is_empty() { artists.insert(q.track.artist.to_lowercase()); } }
+            let tracks = autofill_tracks(db, it.kind.unwrap_or(TrackKind::Song), &it.category, remaining, &excl, &artists)?;
+            if tracks.is_empty() && remaining > 20_000 { warnings.push(format!("autofill: v {} / {} není nic, co by se vešlo do {} s", it.kind.unwrap_or(TrackKind::Song).as_str(), if it.category.is_empty() { "*" } else { &it.category }, remaining / 1000)); }
+            let n = tracks.len();
+            for (k, t) in tracks.into_iter().enumerate() {
+                excl.insert(t.id);
+                out.push(QueueItem::new(t, source, format!("{reason} • autofill do celé hodiny ({}/{n}, zbývalo {} s)", k + 1, remaining / 1000)));
+            }
+            continue;
+        }
         let mk = |t: Track, why: String| {
             let mut q = QueueItem::new(t, source, format!("{reason} • {why}"));
             q.position = it.position.clone();
@@ -537,7 +597,8 @@ pub fn expand(db: &Db, cfg: &Config, items: &[PlItem], source: &str, reason: &st
                     Some(e) => {
                         let show = get::<Show>(db, show_id)?.map(|s| s.name).unwrap_or_default();
                         let r = format!("{reason} • {show} – díl {} {}", e.num, e.title);
-                        let (mut q, _, w) = expand(db, cfg, &e.parts, source, &r, depth + 1)?;
+                        let at = t0 + chrono::Duration::milliseconds(out.iter().map(q_len).sum());
+                        let (mut q, _, w) = expand_at(db, cfg, &e.parts, source, &r, depth + 1, Some(at))?;
                         out.append(&mut q); warnings.extend(w);
                         if let Some(id) = e.id { aired.push(id); }
                     }
