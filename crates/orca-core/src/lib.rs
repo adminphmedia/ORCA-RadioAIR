@@ -44,6 +44,7 @@ pub mod countdown;
 pub mod airlog;
 pub mod npservices;
 pub mod fx;
+pub mod podcast;
 pub mod storage;
 pub mod weather;
 
@@ -146,8 +147,16 @@ impl Orca {
         {
             // záznamy pořadů určené do knihovny (repríza)
             let (a, lib) = (airlog.clone(), library.clone());
+            let (cfg2, db2, dd2, ev2) = (cfg.clone(), db.clone(), data_dir.to_path_buf(), events.clone());
             std::thread::Builder::new().name("orca-airlog-lib".into()).spawn(move || loop {
                 for (p, k, cat) in a.take_library_items() { let r = lib.add_paths(&[p], k, &cat); if !r.errors.is_empty() { log::warn!("záznam pořadu do knihovny: {:?}", r.errors); } }
+                for (p, title, auto) in a.take_podcast_items() {
+                    let c = cfg2.read().clone();
+                    match podcast::from_show(&c, &db2, &dd2, &p, &title, auto) {
+                        Ok(m) => log::info!("podcast: {m}"),
+                        Err(e) => ev2.alert("warning", "podcast", format!("Podcast z pořadu {title}: {e:#}")),
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_secs(20));
             }).ok();
         }

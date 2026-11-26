@@ -118,8 +118,8 @@ pub fn fill(tpl: &str, t: &Track, text: &str, station: &str, url: bool) -> Strin
 fn send(s: &NpService, j: &Job) -> Result<String> {
     if s.only_songs && j.track.kind() != crate::model::TrackKind::Song { return Ok("přeskočeno (není skladba)".into()); }
     match s.kind.as_str() {
-        "ftp" | "ftps" => ftp_upload(s, &j.dir),
-        "sftp" => sftp_upload(s, &j.dir),
+        "ftp" | "ftps" => ftp_upload(s, &files_of(s, &j.dir)),
+        "sftp" => sftp_upload(s, &files_of(s, &j.dir)),
         "tunein" => tunein(s, j),
         "http" => http(s, j),
         "tcp" => {
@@ -152,12 +152,17 @@ fn files_of(s: &NpService, dir: &Path) -> Vec<PathBuf> {
     names.iter().map(|n| dir.join(n)).filter(|p| p.is_file()).collect()
 }
 
-fn ftp_upload(s: &NpService, dir: &Path) -> Result<String> {
+/// Nahraje soubory přes FTP/FTPS/SFTP službu (i pro podcast).
+pub fn upload_files(s: &NpService, files: &[PathBuf]) -> Result<String> {
+    match s.kind.as_str() { "ftp" | "ftps" => ftp_upload(s, files), "sftp" => sftp_upload(s, files), k => Err(anyhow!("služba typu {k} neumí nahrávat soubory – použijte FTP, FTPS nebo SFTP")) }
+}
+
+fn ftp_upload(s: &NpService, files: &[PathBuf]) -> Result<String> {
     use suppaftp::types::FileType;
     use suppaftp::Mode;
     let port = if s.port == 0 { 21 } else { s.port };
     let addr = resolve(&format!("{}:{port}", s.host.trim()))?;
-    let files = files_of(s, dir);
+    let files = files.to_vec();
     if files.is_empty() { return Err(anyhow!("žádný soubor k nahrání – zapněte exporty „co hraje“")); }
     macro_rules! go { ($ftp:expr) => {{
         let mut ftp = $ftp;
@@ -210,8 +215,8 @@ impl russh::client::Handler for SshH {
     }
 }
 
-fn sftp_upload(s: &NpService, dir: &Path) -> Result<String> {
-    let files = files_of(s, dir);
+fn sftp_upload(s: &NpService, files: &[PathBuf]) -> Result<String> {
+    let files = files.to_vec();
     if files.is_empty() { return Err(anyhow!("žádný soubor k nahrání – zapněte exporty „co hraje“")); }
     let port = if s.port == 0 { 22 } else { s.port };
     let known = crate::countdown::data_dir().unwrap_or_else(std::env::temp_dir).join("sftp_known_hosts.txt");

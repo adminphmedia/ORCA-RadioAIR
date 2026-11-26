@@ -26,6 +26,7 @@ pub(crate) type St = Arc<Orca>;
 pub(crate) type ApiResult = Result<Response, ApiError>;
 
 mod airlog_api;
+mod podcast_api;
 mod ext;
 mod general_api;
 mod import_api;
@@ -90,6 +91,7 @@ pub fn router(orca: St) -> Router {
         .route("/encoders", get(encoders_get))
         .route("/encoders/{id}/{action}", post(encoder_action))
         .merge(airlog_api::routes())
+        .merge(podcast_api::routes())
         .merge(ext::routes())
         .merge(plan::routes())
         .merge(proc_api::routes())

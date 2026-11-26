@@ -89,11 +89,15 @@ pub struct ShowRecording {
     pub library_category: String,
     /// mazat výřezy starší než N dní (0 = nemazat)
     pub keep_days: u32,
+    /// vytvořit z nahrávky úpravu pro podcast (s výchozí znělkou a sweeperem)
+    pub podcast: bool,
+    /// rovnou vyrobit epizodu a zveřejnit (jinak čeká na kontrolu v editoru)
+    pub podcast_auto_publish: bool,
 }
 
 impl Default for ShowRecording {
     fn default() -> Self {
-        Self { id: String::new(), name: String::new(), enabled: true, days: vec![1, 2, 3, 4, 5], start: "06:00".into(), end: "09:00".into(), logger_id: "program".into(), aircheck: false, library_kind: String::new(), library_category: String::new(), keep_days: 30 }
+        Self { id: String::new(), name: String::new(), enabled: true, days: vec![1, 2, 3, 4, 5], start: "06:00".into(), end: "09:00".into(), logger_id: "program".into(), aircheck: false, library_kind: String::new(), library_category: String::new(), keep_days: 30, podcast: false, podcast_auto_publish: false }
     }
 }
 
@@ -169,11 +173,12 @@ pub struct AirLogger {
     events: EventBus,
     running: Mutex<HashMap<String, Running>>,
     pending_library: Mutex<Vec<(PathBuf, crate::model::TrackKind, String)>>,
+    pending_podcast: Mutex<Vec<(PathBuf, String, bool)>>,
 }
 
 impl AirLogger {
     pub fn start(data_dir: PathBuf, cfg: Arc<RwLock<Config>>, engine: Arc<Engine>, events: EventBus) -> Arc<Self> {
-        let me = Arc::new(Self { data_dir, cfg, engine, events, running: Mutex::new(HashMap::new()), pending_library: Mutex::new(vec![]) });
+        let me = Arc::new(Self { data_dir, cfg, engine, events, running: Mutex::new(HashMap::new()), pending_library: Mutex::new(vec![]), pending_podcast: Mutex::new(vec![]) });
         let m = me.clone();
         std::thread::Builder::new().name("orca-airlog".into()).spawn(move || {
             let mut last_house = Instant::now() - Duration::from_secs(3600);
@@ -584,6 +589,7 @@ impl AirLogger {
                 match self.export(&s.logger_id, from, to, "mp3", s.aircheck, &s.name, Some(dir.clone())) {
                     Ok(p) => {
                         log::info!("záznam pořadu {}: {}", s.name, p.display());
+                        if s.podcast { self.pending_podcast.lock().push((p.clone(), format!("{} {}", s.name, from.format("%-d. %-m. %Y")), s.podcast_auto_publish)); }
                         if let Some(k) = crate::model::TrackKind::parse(&s.library_kind) { self.pending_library.lock().push((p, k, s.library_category.clone())); }
                     }
                     Err(e) => self.events.alert("warning", "airlog_show", format!("Záznam pořadu {}: {e}", s.name)),
@@ -596,6 +602,7 @@ impl AirLogger {
 // Záznamy pořadů určené do knihovny vyzvedne server (má přístup ke knihovně).
 impl AirLogger {
     pub fn take_library_items(&self) -> Vec<(PathBuf, crate::model::TrackKind, String)> { std::mem::take(&mut *self.pending_library.lock()) }
+    pub fn take_podcast_items(&self) -> Vec<(PathBuf, String, bool)> { std::mem::take(&mut *self.pending_podcast.lock()) }
 }
 
 // ---------------------------------------------------------------------------------------------

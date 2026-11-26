@@ -39,6 +39,8 @@ pub struct Config {
     pub airlog: crate::airlog::AirLogConfig,
     /// Externí efekty (VST / AU / hardwarový procesor) – návrat zpracovaného zvuku pro streamy a záznam
     pub fx: crate::fx::FxConfig,
+    /// Podcast – feed, zveřejnění, výchozí úpravy nahrávek
+    pub podcast: crate::podcast::PodcastConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -111,6 +113,7 @@ impl Default for Config {
             gpio: GpioConfig::default(),
             airlog: crate::airlog::AirLogConfig::default(),
             fx: crate::fx::FxConfig::default(),
+            podcast: crate::podcast::PodcastConfig::default(),
         }
     }
 }
