@@ -1,5 +1,8 @@
 # ORCA RadioAIR 0.9.1
 
+## Systémové požadavky
+- Ovládací panel → Nápověda → Systémové požadavky (HW): minimální a doporučený hardware pro macOS a Windows, místo na disku, provoz 24/7.
+
 ## Ctrl+S / Cmd+S = Uložit v celé aplikaci
 - Zkratka uloží změny všude, kde je tlačítko Uložit (ovládací panel, playlisty, pořady, okna úprav). V otevřeném okně se uloží to okno.
 
