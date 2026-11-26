@@ -32,6 +32,40 @@ pub fn routes() -> Router<St> {
         .route("/link/test", post(test))
         .route("/telegram/test", post(tg_test))
         .route("/telegram/chats", post(tg_chats))
+        .route("/netsync", get(ns_status))
+        .route("/netsync/test", post(ns_test))
+        .route("/netsync/local-break", post(ns_local))
+        .route("/netsync/signal", get(ns_signal))
+}
+
+async fn ns_status(State(o): State<St>) -> Json<orca_core::netsync::NetSyncStatus> { Json(o.netsync.status.read().clone()) }
+
+#[derive(Deserialize)]
+struct NsTest { kind: String, #[serde(default)] len_s: i64 }
+/// Centrála: ruční signál (zkouška / ruční začátek a konec bloku).
+async fn ns_test(State(o): State<St>, Json(b): Json<NsTest>) -> ApiResult {
+    let n = blocking(move || orca_core::netsync::send(&o, &b.kind, &format!("rucne-{}", chrono::Local::now().format("%H%M%S")), b.len_s * 1000)).await?;
+    Ok(Json(json!({"ok": true, "message": format!("signál odeslán {n} stanicím")})).into_response())
+}
+#[derive(Deserialize)]
+struct NsLocal { #[serde(default)] len_s: i64 }
+/// Region: vyzkoušet místní blok (jako by přišel signál).
+async fn ns_local(State(o): State<St>, Json(b): Json<NsLocal>) -> ApiResult {
+    let m = blocking(move || orca_core::netsync::local_break(&o, b.len_s * 1000)).await?;
+    Ok(Json(json!({"ok": true, "message": m})).into_response())
+}
+#[derive(Deserialize)]
+struct NsSig { key: String, #[serde(rename = "type")] kind: String, #[serde(default)] len: f64 }
+/// Region: signál přes HTTP (pro centrály, které nejsou ORCA): /api/netsync/signal?key=…&type=break_start&len=120
+async fn ns_signal(State(o): State<St>, Query(q): Query<NsSig>, headers: HeaderMap) -> ApiResult {
+    let _ = headers;
+    let c = o.cfg.read().netsync.clone();
+    if c.role != "regional" { return Err(bad("tato stanice není nastavená jako regionální")); }
+    if c.key.is_empty() || q.key != c.key { return Err(ApiError(StatusCode::UNAUTHORIZED, "neplatný klíč".into())); }
+    let sig = orca_core::netsync::Signal { kind: q.kind, len_ms: (q.len * 1000.0) as i64, id: format!("http-{}", chrono::Local::now().format("%H%M%S")), ..Default::default() };
+    let o2 = o.clone();
+    blocking(move || { orca_core::netsync::handle(&o2, &sig, "HTTP"); Ok(()) }).await?;
+    ok()
 }
 
 async fn status(State(o): State<St>) -> Json<link::LinkStatus> { Json(o.link.status.read().clone()) }
@@ -214,6 +248,7 @@ async fn p_push(State(o): State<St>, Query(q): Query<PushQ>, headers: HeaderMap,
 /// Spustí hlídání a port propojení (znovu ho otevře při změně nastavení).
 pub async fn run(orca: St) {
     link::start(orca.clone());
+    orca_core::netsync::start(orca.clone());
     let mut current: Option<(String, tokio::task::JoinHandle<()>)> = None;
     loop {
         let c = orca.cfg.read().link.clone();

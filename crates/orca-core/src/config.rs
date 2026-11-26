@@ -45,6 +45,8 @@ pub struct Config {
     pub remote_vt: RemoteVtConfig,
     /// Propojení počítačů: hlavní / záložní / přípravný
     pub link: crate::link::LinkConfig,
+    /// Synchronizace reklam v síti stanic (centrála / region)
+    pub netsync: crate::netsync::NetSyncConfig,
 }
 
 /// Voice tracky z domova: samostatný port, na kterém je jen stránka pro moderátory (nic jiného z ORCA).
@@ -142,6 +144,7 @@ impl Default for Config {
             podcast: crate::podcast::PodcastConfig::default(),
             remote_vt: RemoteVtConfig::default(),
             link: crate::link::LinkConfig::default(),
+            netsync: crate::netsync::NetSyncConfig::default(),
         }
     }
 }

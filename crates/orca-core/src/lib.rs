@@ -67,6 +67,7 @@ pub fn default_data_dir() -> PathBuf {
 /// Otevření samostatného okna s panelem studia (desktopová aplikace – více obrazovek): (panel, titulek)
 pub mod update;
 pub mod link;
+pub mod netsync;
 
 /// Nativní okna panelů (desktop): (akce "open" | "close", panel, titulek, owner = id okna studia, které panel vyjmulo)
 pub type WindowHook = Arc<dyn Fn(&str, &str, &str, &str) -> std::result::Result<(), String> + Send + Sync>;
@@ -97,6 +98,7 @@ pub struct Orca {
     pub update_hook: RwLock<Option<update::UpdateHook>>,
     pub update_state: Arc<parking_lot::Mutex<update::UpdateState>>,
     pub link: link::Link,
+    pub netsync: netsync::NetSync,
 }
 
 impl Orca {
@@ -193,7 +195,7 @@ impl Orca {
         if let Some(v) = &updated_from { events.alert("info", "updated", format!("ORCA RadioAIR aktualizována z verze {v} na {VERSION}. Nastavení, knihovna i plány zůstaly zachované.")); }
         let update_state = Arc::new(parking_lot::Mutex::new(update::UpdateState { current: VERSION.into(), updated_from, pre_update_backup, ..Default::default() }));
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, video, storage: storage::Storage::default(), airlog, update_hook: RwLock::new(None), update_state, link: link::Link::default() }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, video, storage: storage::Storage::default(), airlog, update_hook: RwLock::new(None), update_state, link: link::Link::default(), netsync: netsync::NetSync::default() }))
     }
 
     /// Zjistí, zda je k dispozici nová verze (jen v desktopové aplikaci).
