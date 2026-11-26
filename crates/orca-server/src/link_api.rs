@@ -132,6 +132,8 @@ fn peer_router(o: St) -> Router {
         .route("/link/missing", post(p_missing))
         .route("/link/upload", post(p_upload))
         .route("/link/push", post(p_push))
+        .route("/link/yield", post(p_yield))
+        .route("/link/resume", post(p_resume))
         .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(o.clone(), key_guard))
         .with_state(o)
@@ -149,6 +151,20 @@ async fn key_guard(State(o): State<St>, req: Request, next: Next) -> Response {
     next.run(req).await
 }
 fn ct_eq(a: &[u8], b: &[u8]) -> bool { a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0 }
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct YieldReq { why: String }
+/// Záloha převzala vysílání → hlavní uvolní streamy (mountpointy na Icecastu).
+async fn p_yield(State(o): State<St>, Json(b): Json<YieldReq>) -> ApiResult {
+    if o.cfg.read().link.role != "main" { return Err(bad("tento počítač není hlavní")); }
+    blocking(move || { link::yield_streams(&o, if b.why.is_empty() { "převzetí zálohou" } else { &b.why }); Ok(()) }).await?;
+    ok()
+}
+async fn p_resume(State(o): State<St>) -> ApiResult {
+    blocking(move || { link::resume_streams(&o, "záloha vrátila vysílání"); Ok(()) }).await?;
+    ok()
+}
 
 async fn p_hello(State(o): State<St>) -> Json<link::Hello> { Json(link::hello(&o)) }
 

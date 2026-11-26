@@ -96,6 +96,36 @@ pub struct LinkStatus {
 /// Záloha v pohotovosti – nesmí vysílat, streamovat ani spouštět události.
 static STANDBY: AtomicBool = AtomicBool::new(false);
 pub fn standby() -> bool { STANDBY.load(Ordering::Relaxed) }
+/// Hlavní předal streamy záloze (záloha převzala vysílání) – vlastní streamy nespouští.
+static YIELDED: AtomicBool = AtomicBool::new(false);
+pub fn yielded() -> bool { YIELDED.load(Ordering::Relaxed) }
+
+/// Hlavní: uvolnit stream (mountpoint) pro zálohu.
+pub fn yield_streams(o: &Orca, why: &str) {
+    if YIELDED.swap(true, Ordering::Relaxed) { return; }
+    o.encoders.stop_all();
+    o.link.status.write().state = "yielded".into();
+    o.link.log(format!("streamy předány záloze: {why}"));
+    o.events.alert("error", "link_yield", format!("Záložní počítač převzal vysílání – hlavní počítač uvolnil streamy (důvod zálohy: {why})."));
+}
+/// Hlavní: znovu spustit vlastní streamy.
+pub fn resume_streams(o: &Orca, why: &str) {
+    if !YIELDED.swap(false, Ordering::Relaxed) {
+        // hlavní nebyl v předání (např. po restartu) – streamy, které čekají na další pokus, připojit hned
+        for e in o.encoders.statuses().into_iter().filter(|e| e.state != "live" && e.state != "stopped") { o.encoders.start(&e.id); }
+        return;
+    }
+    o.encoders.autostart();
+    o.link.status.write().state = "main".into();
+    o.link.log(format!("streamy znovu z hlavního počítače: {why}"));
+    o.events.alert("info", "link_resume", format!("Streamy znovu vysílá hlavní počítač ({why})."));
+}
+
+fn post_peer(c: &LinkConfig, path: &str, body: serde_json::Value, timeout_ms: u64) -> Result<()> {
+    let url = peer_url(c, path)?;
+    agent(timeout_ms).post(&url).set("x-orca-link", &c.key).send_json(body).map_err(|e| anyhow!("{e}"))?;
+    Ok(())
+}
 pub fn init_standby(cfg: &Config) { STANDBY.store(cfg.link.role == "backup", Ordering::Relaxed); }
 
 #[derive(Default)]
@@ -444,6 +474,9 @@ fn watch(o: Arc<Orca>) {
     let mut peer_was_ok = true;
     let mut peer_down_alerted = false;
     let mut tick: u64 = 0;
+    // záloha převezme jen po tom, co hlavní aspoň jednou viděla (jinak by při současném startu převzala hned)
+    let mut armed = false;
+    let started = Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(250));
         tick += 1;
@@ -459,10 +492,11 @@ fn watch(o: Arc<Orca>) {
         let c = o.cfg.read().clone();
         let role = c.link.role.clone();
         if role != "backup" && STANDBY.load(Ordering::Relaxed) { STANDBY.store(false, Ordering::Relaxed); }
+        if role != "main" && yielded() { YIELDED.store(false, Ordering::Relaxed); }
         {
             let mut st = o.link.status.write();
             st.role = role.clone();
-            st.state = match role.as_str() { "backup" => if standby() { "standby" } else { "on_air" }, r => r }.to_string();
+            st.state = match role.as_str() { "backup" => if standby() { "standby" } else { "on_air" }, "main" if yielded() => "yielded", r => r }.to_string();
         }
         if role == "single" || c.link.peer.trim().is_empty() { continue; }
         if role == "prep" {
@@ -487,6 +521,14 @@ fn watch(o: Arc<Orca>) {
         }
         let ok = r.is_ok();
         if role == "main" {
+            // streamy předané záloze: vzít zpět, když záloha už nevysílá (vrátila vysílání nebo vypadla)
+            if yielded() {
+                match &r {
+                    Ok(h) if !h.took_over => { let t = *main_good_since.get_or_insert_with(Instant::now); if t.elapsed() >= Duration::from_secs(5) { resume_streams(&o, "záloha už nevysílá"); main_good_since = None; } }
+                    Err(_) if fails >= 10 => { resume_streams(&o, "záloha neodpovídá – streamy přebírá zpět hlavní"); main_good_since = None; }
+                    _ => main_good_since = None,
+                }
+            }
             // hlavní hlídá zálohu: když je 30 s nedostupná, upozorní (jednou)
             if ok {
                 if !peer_was_ok && peer_down_alerted { o.events.alert("info", "link_backup_back", format!("Záložní počítač je zase dostupný ({}).", c.link.peer)); }
@@ -503,6 +545,7 @@ fn watch(o: Arc<Orca>) {
         // ---- záloha
         if standby() {
             let mut reason: Option<String> = None;
+            if ok { armed = true; }
             match &r {
                 Ok(h) => {
                     if c.link.takeover_on_silence && h.on_air && h.silent_s >= c.link.silence_s.max(5) {
@@ -516,7 +559,10 @@ fn watch(o: Arc<Orca>) {
                     if peer_down_alerted { peer_down_alerted = false; }
                 }
                 Err(e) => {
-                    if fails >= c.link.takeover_s.max(2) { reason = Some(format!("hlavní počítač neodpovídá {fails} s ({e})")); }
+                    let limit = if armed { c.link.takeover_s.max(2) } else { 120 };
+                    if fails >= limit && (armed || started.elapsed() >= Duration::from_secs(120)) {
+                        reason = Some(if armed { format!("hlavní počítač neodpovídá {fails} s ({e})") } else { format!("hlavní počítač je nedostupný už 2 minuty od spuštění zálohy ({e})") });
+                    }
                 }
             }
             if let Some(why) = reason { takeover(&o, &why); fails = 0; bad_since = None; stop_since = None; main_good_since = None; continue; }
@@ -549,6 +595,12 @@ pub fn takeover(o: &Arc<Orca>, why: &str) {
     if !standby() { return; }
     STANDBY.store(false, Ordering::Relaxed);
     { let mut st = o.link.status.write(); st.took_over_at = Some(now()); st.took_over_reason = Some(why.to_string()); st.state = "on_air".into(); }
+    // když hlavní ještě žije (ticho, zaseknutý zvuk), ať uvolní stream – jinak by Icecast zálohu nepustil na stejný mountpoint
+    let lc = o.cfg.read().link.clone();
+    match post_peer(&lc, "/yield", serde_json::json!({ "why": why }), 1500) {
+        Ok(()) => o.link.log("hlavní počítač uvolnil streamy"),
+        Err(_) => o.link.log("hlavní počítač nedostupný – streamy se připojí, jakmile Icecast uvolní mountpoint"),
+    }
     o.encoders.autostart();
     o.automation.set_mode(crate::automation::Mode::Auto);
     o.engine.send(crate::engine::Cmd::Play);
@@ -563,6 +615,9 @@ pub fn handback(o: &Arc<Orca>, why: &str) {
     STANDBY.store(true, Ordering::Relaxed);
     o.engine.send(crate::engine::Cmd::Stop);
     o.encoders.stop_all();
+    // hlavní hned znovu spustí streamy (nečeká na své hlídání)
+    let lc = o.cfg.read().link.clone();
+    for _ in 0..3 { if post_peer(&lc, "/resume", serde_json::json!({}), 2000).is_ok() { break; } std::thread::sleep(Duration::from_millis(500)); }
     { let mut st = o.link.status.write(); st.state = "standby".into(); }
     o.link.log(format!("vysílání vráceno hlavnímu: {why}"));
     o.events.alert("info", "link_handback", format!("Záložní počítač vrátil vysílání hlavnímu ({why}) a je znovu v pohotovosti."));

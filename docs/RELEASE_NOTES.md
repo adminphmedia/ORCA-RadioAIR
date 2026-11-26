@@ -5,6 +5,8 @@
 - Záložní počítač v pohotovosti: každou minutu stahuje změny z hlavního (databáze, nastavení, nové zvukové soubory), nehraje ani nestreamuje. Nastavení vázaná na počítač (zvuková karta, mikrofon, GPI, efekty, mapování složek…) se nepřepisují.
 - Hlídání každou sekundu: když hlavní neodpovídá (výchozí 5 s), dlouho hraje ticho, nebo (volitelně) zastavil vysílání, záloha okamžitě převezme vysílání – automatika, streamy, upozornění. Hlavní hlídá zálohu taky (upozornění, když není jištěno).
 - Návrat: automaticky, když hlavní 15 s znovu vysílá, nebo ručně tlačítkem. Ruční převzetí. Odznak Záloha / ZÁLOHA VYSÍLÁ v horní liště.
+- Vysílání bez mixu (jen stream): na Icecast se připojuje jen ten, kdo vysílá. Při převzetí hlavní na požádání zálohy uvolní mountpoint (i když jen hraje ticho), při návratu se hned připojí zpět. S nastaveným fallback-mount + fallback-override na Icecastu zůstanou posluchači připojení (ověřeno: přepnutí 1–5 s bez odpojení posluchače).
+- Záloha po spuštění nepřevezme vysílání, dokud hlavní aspoň jednou neviděla (2 min ochrana proti převzetí při současném startu).
 - Přípravný počítač: Stáhnout z vysílání → připravit plány, kampaně, playlisty, nové skladby → Odeslat do vysílání (nové soubory se nahrají samy, na hlavním se zachová statistika hraní, předem záloha). Ochrana proti přepsání změn provedených mezitím na vysílacím počítači.
 
 ## Nové: Upozornění do Telegramu
