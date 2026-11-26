@@ -93,16 +93,20 @@ impl FxManager {
     fn push(&self, b: Arc<Vec<f32>>) { self.subs.lock().retain(|s| !matches!(s.try_send(b.clone()), Err(crossbeam_channel::TrySendError::Disconnected(_)))); }
 
     fn run(self: Arc<Self>, engine: Arc<Engine>, events: EventBus) {
-        let prog = engine.add_tap();
+        let mut prog_tap: Option<Receiver<Arc<Vec<f32>>>> = None;
         loop {
             let fc = self.cfg.read().fx.clone();
-            // vypnuto: jen přeposílat program (odběratelé vzniklí při zapnutí se odpojí restartem streamu)
+            // vypnuto: jen přeposílat program odběratelům vzniklým při zapnutí (odpojí se restartem streamu);
+            // bez odběratelů nic neodebírat – ať mixér zbytečně nekopíruje zvuk
             if !fc.enabled {
                 RETURN_ACTIVE.store(false, Ordering::Relaxed);
-                { let mut s = self.status.lock(); *s = FxStatus { source: "program".into(), return_db: -120.0, program_db: -120.0, ..Default::default() }; }
+                { let mut s = self.status.lock(); if s.enabled || s.return_ok { *s = FxStatus { source: "program".into(), return_db: -120.0, program_db: -120.0, ..Default::default() }; } }
+                if self.subs.lock().is_empty() { prog_tap = None; std::thread::sleep(Duration::from_millis(500)); continue; }
+                let prog = prog_tap.get_or_insert_with(|| engine.add_tap());
                 if let Ok(b) = prog.recv_timeout(Duration::from_millis(500)) { self.push(b); }
                 continue;
             }
+            let prog = prog_tap.get_or_insert_with(|| engine.add_tap()).clone();
             let opened = crate::airlog::open_input(&fc.return_device).and_then(|(rx, g)| Ok((rx, g, crate::airlog::input_rate(&fc.return_device)?)));
             let (ret, _guard, in_rate) = match opened {
                 Ok(x) => x,

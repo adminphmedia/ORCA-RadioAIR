@@ -1,3 +1,17 @@
+# ORCA RadioAIR 0.9.1
+
+## Oprava: dva zvuky přes sebe (reportáž se sama spustila přes skladbu)
+- Voice track nebo sweeper s umístěním přes skladbu (Na začátek, Přes konec, Mezi skladbami) se teď přes skladbu položí jen tehdy, když se vejde do intra nebo do dojezdu skladby (bez zpěvu). Položky delší než 60 s (reportáže, rozhovory) se přes skladbu nekladou nikdy.
+- Co se nevejde, zahraje se samostatně po skladbě – ve frontě je u položky důvod „hraje samostatně“. Dříve dlouhá reportáž v knihovně Voice tracky začala hrát přes rozehranou skladbu (např. po 30 s).
+
+## Rychlost
+- Hlídání propojení počítačů a modul externích efektů už zbytečně nekopírují stav ani zvuk, když nejsou zapnuté.
+- Hodiny ve studiu se vykreslují bez náročných efektů (záře, stíny).
+
+## Hodiny (clocky)
+- Náhled hodiny je světlý a vzdušný – bílý ciferník, tenký barevný prstenec kroků s čísly, výrazně jen čtvrthodiny. Stejně tak hodiny ve studiu a export PNG.
+- Týdenní rozvrh ukazuje u každého bloku barvu i název hodin; sousední hodiny se stejnými hodinami se spojí do jednoho bloku. Stejně v mřížce schémat Music Selectoru.
+
 # ORCA RadioAIR 0.9.0
 
 ## Manuál a nápověda pro úplné začátečníky

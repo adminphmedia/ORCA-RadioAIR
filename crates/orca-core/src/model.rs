@@ -281,6 +281,7 @@ impl QueueItem {
     /// Bude hrát přes předchozí položku (ne samostatně v řadě)?
     pub fn is_attached_overlay(&self) -> bool {
         self.track.kind().is_overlay_capable() && self.position.as_deref().map(|p| p != "independent").unwrap_or(false)
+            && { let (ci, _, co) = self.track.effective_cues(); co - ci <= 60_000 }
     }
 
     /// Doba, o kterou položka posune vysílání (pro odhad časů).

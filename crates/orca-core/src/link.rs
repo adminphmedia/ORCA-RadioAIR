@@ -484,7 +484,7 @@ fn watch(o: Arc<Orca>) {
         {
             let (l, r) = o.engine.meters();
             let db = 20.0 * l.max(r).max(1e-9).log10();
-            let playing = o.engine.snapshot().state == crate::engine::PlayState::Playing;
+            let playing = o.engine.play_state() == crate::engine::PlayState::Playing;
             let mut s = o.link.silent_since.lock();
             if playing && db < -50.0 { s.get_or_insert_with(Instant::now); } else { *s = None; }
         }
@@ -533,7 +533,7 @@ fn watch(o: Arc<Orca>) {
             if ok {
                 if !peer_was_ok && peer_down_alerted { o.events.alert("info", "link_backup_back", format!("Záložní počítač je zase dostupný ({}).", c.link.peer)); }
                 peer_down_alerted = false; peer_was_ok = true;
-                if let Ok(h) = &r { if h.took_over && o.engine.snapshot().state == crate::engine::PlayState::Playing && tick % 120 == 0 {
+                if let Ok(h) = &r { if h.took_over && tick % 120 == 0 && o.engine.play_state() == crate::engine::PlayState::Playing {
                     o.events.alert("error", "link_both_on_air", "Hlavní i záložní počítač vysílají současně – na záložním klikněte Vrátit vysílání hlavnímu (nebo zapněte automatický návrat).");
                 } }
             } else {

@@ -398,6 +398,9 @@ impl Engine {
 
     pub fn snapshot(&self) -> EngineStatus { self.status.read().clone() }
 
+    /// Stav přehrávání bez kopírování celého stavu (pro časté dotazy).
+    pub fn play_state(&self) -> PlayState { self.status.read().state }
+
     fn try_open_output(&self) -> Option<OutputHandle> {
         let (dev, buf) = { let c = self.cfg.read(); (c.audio.output_device.clone(), c.audio.buffer_ms) };
         if dev == "none" {
@@ -757,6 +760,16 @@ impl Engine {
                 let front = { let q = self.queue.lock(); q.front().filter(|f| f.is_attached_overlay()).cloned() };
                 let Some(mut ov) = front else { break };
                 let Some(host) = voices.iter().rev().find(|v| !v.overlay && !v.kill_after_fade && !v.segued) else { break };
+                // dlouhá položka (reportáž, dlouhý voice track) by hrála přes skladbu – nikdy nepřekrývat,
+                // zahraje se normálně po skladbě
+                if let Err(why) = overlay_fits(&host.item.track, &ov) {
+                    let mut q = self.queue.lock();
+                    if let Some(f) = q.front_mut() { if f.id == ov.id { f.position = None; f.reason = format!("{} · hraje samostatně ({why})", f.reason).trim_start_matches(" · ").to_string(); } }
+                    drop(q);
+                    log::info!("„{}“ nepřekrývá skladbu: {why}", ov.track.display());
+                    self.events.emit(Event::QueueChanged);
+                    break;
+                }
                 self.queue.lock().pop_front();
                 self.refresh(&mut ov);
                 let trigger = Self::overlay_trigger(host, &ov, rate);
@@ -1096,4 +1109,32 @@ impl Engine {
     }
 
     pub fn queue_clear(&self) { self.queue.lock().clear(); self.events.emit(Event::QueueChanged); }
+}
+
+
+/// Smí položka (sweeper / voice track) hrát přes hostitelskou skladbu? Překrytí je jen tam, kde se nezpívá
+/// (intro, outro) a jen pro krátké položky – jinak by hrály dva zvuky přes sebe.
+pub fn overlay_fits(host: &crate::model::Track, ov: &QueueItem) -> Result<(), String> {
+    const MAX_OVERLAY_MS: i64 = 60_000;
+    let (ci, _, co) = ov.track.effective_cues();
+    let len = (co - ci).max(0);
+    if len > MAX_OVERLAY_MS { return Err(format!("délka {} s – přes skladbu se kladou jen položky do 60 s", len / 1000)); }
+    let (hci, hmix, _) = host.effective_cues();
+    let intro = (host.intro_ms - hci).max(0);
+    let outro_win = if host.outro_ms > hci && host.outro_ms < hmix { hmix - host.outro_ms } else { 10_000 };
+    let grace = 3_000;
+    let pos = ov.position.as_deref().unwrap_or("start");
+    let ok = match pos {
+        p if p.starts_with("custom:") => true, // ručně nastavené v editoru přechodů
+        "start" | "before_intro" => len <= intro + grace || (ov.track.kind() == crate::model::TrackKind::Sweeper && len <= 8_000),
+        "before_end" => len <= outro_win + grace,
+        "bridge" => len / 2 <= outro_win + grace,
+        _ => true,
+    };
+    if ok { Ok(()) } else {
+        Err(match pos {
+            "start" | "before_intro" => format!("{} s je delší než intro skladby ({} s)", len / 1000, intro / 1000),
+            _ => format!("{} s je delší než konec skladby bez zpěvu ({} s)", len / 1000, outro_win / 1000),
+        })
+    }
 }
