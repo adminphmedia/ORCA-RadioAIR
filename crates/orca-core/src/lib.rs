@@ -94,6 +94,28 @@ pub struct Orca {
 }
 
 impl Orca {
+    /// Akce studia podle názvu (klávesové zkratky – i globální z desktopové aplikace, GPIO/MIDI).
+    pub fn studio_action(&self, action: &str) -> bool {
+        use engine::Cmd;
+        let st = self.engine.snapshot();
+        match action {
+            "play" => self.engine.send(Cmd::Play),
+            "next" => self.engine.send(Cmd::Next),
+            "pause" => self.engine.send(Cmd::Pause),
+            "stop" => self.engine.send(Cmd::Stop),
+            "stop_after" => self.engine.send(Cmd::StopAfterCurrent(!st.stop_after_current)),
+            "loop" => self.engine.send(Cmd::Loop(!st.loop_current)),
+            "restart" => self.engine.send(Cmd::Restart),
+            "mic" => self.engine.send(Cmd::TalkOver(!st.talkover)),
+            "stop_instants" => self.engine.send(Cmd::StopInstants),
+            "continue" => { self.engine.live_continue(); }
+            "auto" => self.automation.set_mode(automation::Mode::Auto),
+            "manual" => self.automation.set_mode(automation::Mode::Manual),
+            _ => return false,
+        }
+        true
+    }
+
     pub fn start(data_dir: &Path) -> Result<Arc<Orca>> {
         std::fs::create_dir_all(data_dir)?;
         // nová verze: záloha databáze a nastavení dřív, než je migrace změní

@@ -25,6 +25,7 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // přibalené zdroje: ffmpeg a UI
             if let Ok(res) = app.path().resource_dir() {
@@ -59,6 +60,43 @@ fn main() {
                 let (rx, cfg) = (orca.events.subscribe(), orca.cfg.clone());
                 std::thread::Builder::new().name("orca-autostart".into()).spawn(move || {
                     while let Ok(ev) = rx.recv() { if matches!(ev, orca_core::events::Event::ConfigChanged) { sync(cfg.read().general.start_with_os); } }
+                })?;
+            }
+
+            // globální klávesové zkratky – fungují i když je ORCA v pozadí / minimalizovaná
+            {
+                use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+                let handle = app.handle().clone();
+                let o2 = orca.clone();
+                let apply = move || {
+                    let (h2, o3) = (handle.clone(), o2.clone());
+                    let _ = handle.run_on_main_thread(move || {
+                        let gs = h2.global_shortcut();
+                        let _ = gs.unregister_all();
+                        let g = o3.cfg.read().general.clone();
+                        if !g.global_hotkeys_enabled { return; }
+                        for (action, combo) in g.global_hotkeys {
+                            for k in combo.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+                                // bez modifikátoru by zkratka brala klávesu všem programům – ignorovat
+                                if !k.contains('+') { log::warn!("globální zkratka {k} bez Ctrl/Alt/Cmd – přeskočena"); continue; }
+                                match k.replace("Cmd", "Super").parse::<Shortcut>() {
+                                    Ok(sc) => {
+                                        let (o4, a) = (o3.clone(), action.clone());
+                                        if let Err(e) = gs.on_shortcut(sc, move |_app, _sc, ev| { if ev.state() == ShortcutState::Pressed { o4.studio_action(&a); } }) {
+                                            log::warn!("globální zkratku {k} nelze zaregistrovat (používá ji jiný program?): {e}");
+                                            o3.events.alert("warning", "hotkeys", format!("Zkratku {k} nelze použít – nejspíš ji používá jiný program."));
+                                        }
+                                    }
+                                    Err(e) => log::warn!("neplatná zkratka {k}: {e}"),
+                                }
+                            }
+                        }
+                    });
+                };
+                apply();
+                let rx = orca.events.subscribe();
+                std::thread::Builder::new().name("orca-hotkeys".into()).spawn(move || {
+                    while let Ok(ev) = rx.recv() { if matches!(ev, orca_core::events::Event::ConfigChanged) { apply(); } }
                 })?;
             }
 

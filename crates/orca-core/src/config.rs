@@ -1052,7 +1052,14 @@ pub struct GeneralConfig {
     pub hotkeys: BTreeMap<String, String>,
     /// Bránit uspání počítače a zvýšit prioritu vysílání
     pub keep_awake: bool,
+    /// Zkratky fungují i když je ORCA v pozadí / minimalizovaná (jen desktopová aplikace)
+    pub global_hotkeys_enabled: bool,
+    /// Globální zkratky: akce → kombinace (musí obsahovat Ctrl/Alt/Cmd, např. "Ctrl+Alt+1")
+    pub global_hotkeys: BTreeMap<String, String>,
 }
+/// Výchozí globální zkratky (Ctrl+Alt+…, aby nebraly klávesy jiným programům).
+pub const DEFAULT_GLOBAL_HOTKEYS: [(&str, &str); 8] = [("play", "Ctrl+Alt+1"), ("next", "Ctrl+Alt+2"), ("pause", "Ctrl+Alt+3"), ("stop_after", "Ctrl+Alt+5"),
+    ("mic", "Ctrl+Alt+8"), ("stop_instants", "Ctrl+Alt+Escape"), ("auto", "Ctrl+Alt+9"), ("manual", "Ctrl+Alt+0")];
 /// Výchozí klávesy: F-klávesy + alternativa Alt(⌥)+číslo (na Macu jsou F1–F12 systémové klávesy).
 pub const DEFAULT_HOTKEYS: [(&str, &str); 12] = [("play", "F1, Alt+1"), ("next", "F2, Alt+2"), ("pause", "F3, Alt+3"), ("stop", "F4, Alt+4"), ("stop_after", "F5, Alt+5"), ("loop", "F6, Alt+6"),
     ("restart", "F7, Alt+7"), ("mic", "F8, Alt+8"), ("stop_instants", "Escape"), ("auto", "F9, Alt+9"), ("manual", "F10, Alt+0"), ("continue", "F12, Alt+Enter")];
@@ -1062,6 +1069,7 @@ impl Default for GeneralConfig {
         let hk = DEFAULT_HOTKEYS
             .into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         Self { start_with_os: false, require_login: false, auto_logout_min: 0, folder_mappings: vec![], email: EmailConfig::default(), custom_logs: vec![], silence: SilenceConfig::default(),
-            backup: BackupConfig::default(), log_retention_days: 0, editor_path: String::new(), hotkeys: hk, keep_awake: true }
+            backup: BackupConfig::default(), log_retention_days: 0, editor_path: String::new(), hotkeys: hk, keep_awake: true,
+            global_hotkeys_enabled: false, global_hotkeys: DEFAULT_GLOBAL_HOTKEYS.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() }
     }
 }
