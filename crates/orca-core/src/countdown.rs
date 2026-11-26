@@ -110,6 +110,8 @@ pub fn dir(data_dir: &Path) -> PathBuf { data_dir.join("Countdown") }
 static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Nastaví datovou složku (při startu) – pro rozvinutí playlistů, kde není po ruce.
 pub fn set_data_dir(p: &Path) { let _ = DATA_DIR.set(p.to_path_buf()); }
+/// Datová složka ORCA (nastavená při startu).
+pub fn data_dir() -> Option<PathBuf> { DATA_DIR.get().cloned() }
 pub fn data_dir_of(_db: &crate::db::Db) -> PathBuf { DATA_DIR.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("orca")) }
 fn custom_path(data_dir: &Path, which: &str) -> Option<PathBuf> {
     let d = dir(data_dir);

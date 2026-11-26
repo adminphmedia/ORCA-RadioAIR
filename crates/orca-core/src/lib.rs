@@ -42,6 +42,7 @@ pub mod video;
 pub mod business;
 pub mod countdown;
 pub mod airlog;
+pub mod npservices;
 pub mod storage;
 pub mod weather;
 

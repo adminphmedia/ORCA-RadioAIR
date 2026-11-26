@@ -33,6 +33,11 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "alac", "isomp4", "flac
 toml = "1.2.2"
 ureq = { version = "2", features = ["json"] }
 urlencoding = "2.1.3"
+suppaftp = { version = "13", features = ["rustls-ring"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh-sftp = "4"
+webpki-roots = "1"
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "macros"] }
 uuid = { version = "1.29.3", features = ["v4", "serde"] }
 walkdir = "2.5.1"
 encoding_rs = "0.8"

@@ -40,6 +40,8 @@ pub fn routes() -> Router<St> {
         .route("/monitor/stop", post(monitor_stop))
         .route("/monitor/status", get(monitor_status))
         .route("/monitor/route", get(monitor_route))
+        .route("/nowplaying/services", get(np_services))
+        .route("/nowplaying/services/test", post(np_service_test))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, ApiError> {
@@ -237,6 +239,23 @@ async fn monitor_play(State(o): State<St>, Json(r): Json<MonReq>) -> ApiResult {
     ok()
 }
 async fn monitor_stop(State(o): State<St>) -> ApiResult { o.monitor.stop(); ok() }
+async fn np_services() -> ApiResult { Ok(Json(json!(orca_core::npservices::statuses())).into_response()) }
+
+#[derive(serde::Deserialize)]
+struct NpTest { service: orca_core::npservices::NpService }
+/// Vyzkoušet službu hned – s právě hrající skladbou (nebo ukázkovou).
+async fn np_service_test(State(o): State<St>, Json(b): Json<NpTest>) -> ApiResult {
+    let cfg = o.cfg.read().clone();
+    let track = o.engine.snapshot().current.map(|v| v.item.track).unwrap_or_else(|| {
+        let mut t = orca_core::model::Track::default(); t.artist = "ORCA RadioAIR".into(); t.title = "Test odesílání".into(); t.duration_ms = 180_000; t
+    });
+    let text = orca_core::nowplaying::public_text(&cfg, &track).unwrap_or_else(|| track.display());
+    let dir = orca_core::nowplaying::export_dir(&cfg, &o.data_dir);
+    let job = orca_core::npservices::Job { services: vec![], track, text, station: cfg.station.name.clone(), dir };
+    let r = blocking(move || orca_core::npservices::test(&b.service, &job)).await;
+    match r { Ok(msg) => Ok(Json(json!({"ok": true, "message": msg})).into_response()), Err(e) => Ok(Json(json!({"ok": false, "message": e.1})).into_response()) }
+}
+
 async fn monitor_route(State(o): State<St>) -> ApiResult {
     let c = o.cfg.read().clone();
     Ok(Json(json!(blocking(move || Ok(orca_core::monitor::route(&c))).await?)).into_response())

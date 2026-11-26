@@ -404,6 +404,8 @@ pub struct NowPlayingConfig {
     pub export_cover: bool,
     /// HTTP POST s JSON při změně skladby (webhooky).
     pub webhooks: Vec<String>,
+    /// Odesílání „co hraje“: FTP/FTPS/SFTP, TuneIn, HTTP, TCP, UDP
+    pub services: Vec<crate::npservices::NpService>,
 }
 
 impl Default for NowPlayingConfig {
@@ -417,7 +419,7 @@ impl Default for NowPlayingConfig {
         m.insert(TrackKind::Asset, String::new());
         m.insert(TrackKind::Instant, "NO-UPDATE".into());
         m.insert(TrackKind::Bed, "NO-UPDATE".into());
-        Self { enabled: true, export_dir: PathBuf::new(), per_kind: m, history_size: 10, next_size: 5, export_cover: true, webhooks: vec![] }
+        Self { enabled: true, export_dir: PathBuf::new(), per_kind: m, history_size: 10, next_size: 5, export_cover: true, webhooks: vec![], services: vec![] }
     }
 }
 

@@ -83,6 +83,8 @@ impl NowPlayingWriter {
             }
         }
 
+        crate::npservices::trigger(crate::npservices::Job { services: cfg.nowplaying.services.clone(), track: current.clone(), text: text.to_string(), station: cfg.station.name.clone(), dir: dir.clone() });
+
         for url in &cfg.nowplaying.webhooks {
             let body = json!({"event": "track_started", "station": cfg.station.name, "at": now, "now": track_json(current, text)});
             let url = url.clone();
