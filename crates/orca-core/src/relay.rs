@@ -294,6 +294,10 @@ fn run_device(s: &RelaySource, rate: u32, sink: &mut Sink, status_id: &str) -> O
     res
 }
 
+/// Vstup zvukové karty → prokládané stereo f32 (sdílí i nahrávání vysílání).
+pub(crate) fn build_input<T: SizedSample + Send + 'static>(dev: &cpal::Device, sc: &cpal::StreamConfig, ch: usize, tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<cpal::Stream>
+where f32: cpal::FromSample<T> { build::<T>(dev, sc, ch, tx) }
+
 fn build<T: SizedSample + Send + 'static>(dev: &cpal::Device, sc: &cpal::StreamConfig, ch: usize, tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<cpal::Stream>
 where f32: cpal::FromSample<T> {
     let st = dev.build_input_stream(sc, move |data: &[T], _| {

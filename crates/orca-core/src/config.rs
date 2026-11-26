@@ -35,6 +35,8 @@ pub struct Config {
     pub general: GeneralConfig,
     /// Vstupy z mixážního pultu a ovladačů (fader start, GPI, MIDI, TCP)
     pub gpio: GpioConfig,
+    /// Monitoring – nahrávání vysílání (logger, archiv, aircheck, záznamy pořadů)
+    pub airlog: crate::airlog::AirLogConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -105,6 +107,7 @@ impl Default for Config {
             video: crate::video::VideoConfig::default(),
             general: GeneralConfig::default(),
             gpio: GpioConfig::default(),
+            airlog: crate::airlog::AirLogConfig::default(),
         }
     }
 }

@@ -41,6 +41,7 @@ pub mod users;
 pub mod video;
 pub mod business;
 pub mod countdown;
+pub mod airlog;
 pub mod storage;
 pub mod weather;
 
@@ -87,6 +88,7 @@ pub struct Orca {
     pub inbox: Arc<station::Inbox>,
     pub video: Arc<video::VideoManager>,
     pub storage: storage::Storage,
+    pub airlog: Arc<airlog::AirLogger>,
     pub update_hook: RwLock<Option<update::UpdateHook>>,
     pub update_state: Arc<parking_lot::Mutex<update::UpdateState>>,
 }
@@ -115,6 +117,15 @@ impl Orca {
         if let Err(e) = catalog::ensure_default_palette(&db) { log::warn!("palety: {e}"); }
         match ads::migrate_text_clients(&db) { Ok(n) if n > 0 => log::info!("reklama: převedeno {n} klientů do databáze klientů"), Err(e) => log::warn!("klienti: {e}"), _ => {} }
         let encoders = encoder::EncoderManager::new(engine.clone(), cfg.clone(), events.clone());
+        let airlog = airlog::AirLogger::start(data_dir.to_path_buf(), cfg.clone(), engine.clone(), events.clone());
+        {
+            // záznamy pořadů určené do knihovny (repríza)
+            let (a, lib) = (airlog.clone(), library.clone());
+            std::thread::Builder::new().name("orca-airlog-lib".into()).spawn(move || loop {
+                for (p, k, cat) in a.take_library_items() { let r = lib.add_paths(&[p], k, &cat); if !r.errors.is_empty() { log::warn!("záznam pořadu do knihovny: {:?}", r.errors); } }
+                std::thread::sleep(std::time::Duration::from_secs(20));
+            }).ok();
+        }
         let automation = automation::Automation::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), events.clone(), data_dir.to_path_buf());
         let processing = processing::Processing::start(db.clone(), cfg.clone(), engine.clone(), events.clone(), data_dir.to_path_buf());
         let meta = meta::MetaHub::start(db.clone(), cfg.clone(), engine.clone(), encoders.clone(), data_dir.to_path_buf());
@@ -144,7 +155,7 @@ impl Orca {
         if let Some(v) = &updated_from { events.alert("info", "updated", format!("ORCA RadioAIR aktualizována z verze {v} na {VERSION}. Nastavení, knihovna i plány zůstaly zachované.")); }
         let update_state = Arc::new(parking_lot::Mutex::new(update::UpdateState { current: VERSION.into(), updated_from, pre_update_backup, ..Default::default() }));
         log::info!("ORCA RadioAIR {VERSION} běží, data: {}", data_dir.display());
-        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, video, storage: storage::Storage::default(), update_hook: RwLock::new(None), update_state }))
+        Ok(Arc::new(Orca { data_dir: data_dir.to_path_buf(), config_path, cfg, db, events, library, engine, encoders, automation, recorder: Arc::new(recorder::Recorder::new()), meta, processing, window_hook: RwLock::new(None), general, users: users::Users::default(), monitor: monitor::Monitor::default(), gpio, inbox, video, storage: storage::Storage::default(), airlog, update_hook: RwLock::new(None), update_state }))
     }
 
     /// Zjistí, zda je k dispozici nová verze (jen v desktopové aplikaci).

@@ -1,3 +1,23 @@
+# ORCA RadioAIR 0.8.0 – testovací verze
+
+## Nové: Monitoring – nahrávání vysílání
+- Nepřetržitý záznam 24/7 do souborů po hodinách (15 min – celý den), automatické mazání po N dnech a nad limit místa, odhad místa na disku.
+- Zdroje: program ORCA (co jde do vysílání), vstup zvukové karty (odposlech éteru z FM/DAB přijímače), internetový stream (URL). Více záznamníků najednou.
+- Archiv: den na časové ose (záznam, odvysílané položky, mikrofon, ticho, výpadky), poslech od libovolného času (jen do předposlechu), výřez MP3/WAV/FLAC, důkaz odvysílání položky ±3 s, aircheck (jen mluvené vstupy), zamčení dne proti smazání.
+- Kontrolní součty SHA-256 dokončených souborů a jejich ověření; hlídání ticha s upozorněním; upozornění při výpadku záznamu.
+- Pravidelné záznamy pořadů (celé nebo aircheck) po skončení pořadu, volitelně rovnou do knihovny pro reprízu.
+- V horní liště ● REC (při chybě bliká).
+
+## Předposlech nikdy do vysílání
+- ORCA nepustí předposlech na výstup, kam jde vysílání; poslech v editoru skladby, náhled časomíry i porovnání processingu se při riziku přesměruje do předposlechu nebo zablokuje.
+- Výběr výstupu předposlechu v Ovládací panel → Audio s kontrolou (vysílání / předposlech / okno aplikace).
+
+## Knihovna: přesun souborů mezi druhy a kategoriemi
+- V detailu souboru Druh a Kategorie, hromadně „Přesunout do…“, nebo přetažení souboru na záložku druhu. Soubor se přesune i ve složce na disku.
+
+## Časomíra ve frontě
+- Naplánované časomíry (i z pravidelných událostí na 3 h dopředu) jsou vidět přímo ve frontě vysílání: čas dlouhého tónu, pípání, podkres, první pípnutí; zrušení jednoho výskytu.
+
 # ORCA RadioAIR 0.7.9 – testovací verze
 
 ## Oprava: studio se nenačetlo („Obrazovku se nepodařilo načíst“, React #185)

@@ -1029,6 +1029,9 @@ impl Engine {
     pub fn bed_stop_now(&self) { let _ = self.cmd_tx.send(Cmd::BedOff); }
 
     /// Právě běží živý vstup (čeká se na pokračování)?
+    /// Moderátor mluví (talkover / MIC v režimu přes pult).
+    pub fn talkover(&self) -> bool { self.status.read().talkover }
+
     pub fn live_active(&self) -> bool { self.status.read().current.as_ref().map(|c| c.item.live && !c.fading).unwrap_or(false) }
 
     /// Pokračovat po živém vstupu (jen když živý vstup právě běží). Vrací, zda se pokračovalo.
