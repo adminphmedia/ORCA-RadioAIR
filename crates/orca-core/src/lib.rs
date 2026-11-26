@@ -45,6 +45,7 @@ pub mod airlog;
 pub mod npservices;
 pub mod fx;
 pub mod podcast;
+pub mod transition;
 pub mod storage;
 pub mod weather;
 

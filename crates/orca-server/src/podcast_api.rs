@@ -29,6 +29,8 @@ pub fn routes() -> Router<St> {
         .route("/podcast/upload", post(upload).layer(DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)))
         .route("/podcast/image", post(image_upload).layer(DefaultBodyLimit::max(20 * 1024 * 1024)))
         .route("/podcast/image/{name}", get(image_get))
+        .route("/transition/preview", post(transition_preview))
+        .route("/queue/{id}/cues", axum::routing::put(queue_cues))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, ApiError> {
@@ -247,4 +249,28 @@ async fn image_get(State(o): State<St>, Path(name): Path<String>, req: axum::ext
     use tower::ServiceExt;
     if name.contains('/') || name.contains('\\') || name.contains("..") { return Err(bad("neplatný název")); }
     Ok(tower_http::services::ServeFile::new(podcast::root(&o.data_dir).join(name)).oneshot(req).await.map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.into_response())
+}
+
+#[derive(Deserialize)]
+struct TransB { #[serde(flatten)] p: orca_core::transition::Preview, #[serde(default)] monitor: bool }
+/// Vícestopý editor: zvukový náhled přechodu (MP3), nebo poslech do předposlechu.
+async fn transition_preview(State(o): State<St>, Json(b): Json<TransB>) -> ApiResult {
+    let (cfg, db) = (o.cfg.read().clone(), o.db.clone());
+    let p = b.p;
+    let path = blocking(move || orca_core::transition::render(&cfg, &db, &p)).await?;
+    if b.monitor {
+        let o2 = o.clone();
+        blocking(move || { let c = o2.cfg.read().clone(); o2.monitor.play(&c, None, path, 0, 0) }).await?;
+        return ok();
+    }
+    let data = tokio::fs::read(&path).await?;
+    Ok(([(header::CONTENT_TYPE, "audio/mpeg")], data).into_response())
+}
+
+#[derive(Deserialize)]
+struct CuesB { cue_in_ms: Option<i64>, intro_ms: Option<i64>, mix_ms: Option<i64>, cue_out_ms: Option<i64>, #[serde(default)] position: Option<Option<String>> }
+/// Značky jen pro toto zařazení ve frontě (skladba v knihovně se nemění).
+async fn queue_cues(State(o): State<St>, Path(id): Path<String>, Json(b): Json<CuesB>) -> ApiResult {
+    if !o.engine.queue_set_cues(&id, b.cue_in_ms, b.intro_ms, b.mix_ms, b.cue_out_ms, b.position) { return Err(ApiError(StatusCode::NOT_FOUND, "položka už ve frontě není (možná už hraje)".into())); }
+    ok()
 }

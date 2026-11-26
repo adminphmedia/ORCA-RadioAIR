@@ -1067,6 +1067,22 @@ impl Engine {
         ok
     }
 
+    /// Vícestopý editor: značky jen pro toto zařazení ve frontě (skladba v knihovně se nemění).
+    pub fn queue_set_cues(&self, id: &str, cue_in: Option<i64>, intro: Option<i64>, mix: Option<i64>, cue_out: Option<i64>, position: Option<Option<String>>) -> bool {
+        let mut hit = false;
+        for it in self.queue.lock().iter_mut().filter(|it| it.id == id) {
+            if let Some(v) = cue_in { it.track.cue_in_ms = v.max(0); }
+            if let Some(v) = intro { it.track.intro_ms = v.max(0); }
+            if let Some(v) = mix { it.track.mix_ms = v.max(0); }
+            if let Some(v) = cue_out { it.track.cue_out_ms = v.max(0); }
+            if let Some(p) = position.clone() { it.position = p; }
+            it.track.manual_cues = true;
+            hit = true;
+        }
+        if hit { self.events.emit(Event::QueueChanged); }
+        hit
+    }
+
     /// Soubor se v knihovně přesunul / změnil druh či kategorii → aktualizovat čekající položky fronty.
     pub fn queue_refresh_track(&self, t: &Track) {
         let mut hit = false;
