@@ -403,6 +403,45 @@ impl Library {
         rep
     }
 
+    /// Přesune soubor do jiného druhu (skladba, jingle …) a/nebo kategorie.
+    /// Soubor ve složce knihovny se fyzicky přesune do odpovídající podsložky (aby ho sken nevrátil zpět);
+    /// soubor mimo knihovnu zůstane na místě a změní se jen záznam. Vrací nový záznam a zda se soubor přesunul.
+    pub fn move_track(&self, id: i64, kind: TrackKind, category: &str) -> Result<(Track, bool)> {
+        let t = self.db.get_track(id)?.ok_or_else(|| anyhow::anyhow!("soubor nenalezen"))?;
+        let category = category.trim().to_string();
+        let src = PathBuf::from(&t.path);
+        let mut moved = false;
+        let mut new_path = t.path.clone();
+        if src.is_file() && self.folder_for(&src).is_some() {
+            let dir = self.target_dir(kind, &category);
+            if src.parent() != Some(dir.as_path()) {
+                let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| t.filename.clone());
+                let dest = unique_path(&dir, &name, "rename").ok_or_else(|| anyhow::anyhow!("v cílové složce nelze vytvořit název"))?;
+                let dest_s = path_str(&dest);
+                // nejdřív záznam (sledování složek pak nový soubor pozná a nepřidá ho podruhé), pak soubor
+                self.set_location(id, &dest_s, kind, &category)?;
+                let r = std::fs::rename(&src, &dest).or_else(|_| std::fs::copy(&src, &dest).and_then(|_| std::fs::remove_file(&src)));
+                if let Err(e) = r {
+                    if src.exists() { let _ = std::fs::remove_file(&dest); }
+                    self.set_location(id, &t.path, t.kind(), &t.category)?;
+                    anyhow::bail!("soubor se nepodařilo přesunout ({e}) – je možná právě otevřený jiným programem");
+                }
+                moved = true; new_path = dest_s;
+            }
+        }
+        if !moved { self.set_location(id, &new_path, kind, &category)?; }
+        let nt = self.db.get_track(id)?.ok_or_else(|| anyhow::anyhow!("soubor nenalezen"))?;
+        self.events.emit(Event::LibraryChanged { added: 0, updated: 1, missing: 0 });
+        Ok((nt, moved))
+    }
+
+    fn set_location(&self, id: i64, path: &str, kind: TrackKind, category: &str) -> Result<()> {
+        let filename = Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        self.db.with_conn(|c| c.execute("UPDATE tracks SET path=?2, filename=?3, kind=?4, category=?5, missing=0, updated_at=?6 WHERE id=?1",
+            rusqlite::params![id, path, filename, kind.as_str(), category, crate::db::now_utc()]))?;
+        Ok(())
+    }
+
     /// Smaže záznam; soubor se přesune do koše knihovny (_Trash), aby ho sledování znovu nepřidalo.
     pub fn delete_track(&self, id: i64) -> Result<()> {
         let Some(t) = self.db.get_track(id)? else { return Ok(()) };

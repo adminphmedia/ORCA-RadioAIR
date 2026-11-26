@@ -55,7 +55,18 @@ pub struct Automation {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct PendingCountdown { pub id: String, pub at: String, #[serde(skip)] pub at_dt: DateTime<Local>, pub spec: crate::countdown::CountdownSpec, pub label: String }
+pub struct PendingCountdown {
+    pub id: String, pub at: String, #[serde(skip)] pub at_dt: DateTime<Local>, pub spec: crate::countdown::CountdownSpec, pub label: String,
+    /// manual (vložená ručně – zaregistrovaná) | event (z pravidelné události – zatím jen v plánu)
+    #[serde(default)] pub source: String,
+    /// klíč výskytu události (zrušení jen tohoto výskytu)
+    #[serde(default)] pub key: String,
+    /// čas prvního pípnutí (resp. začátku podkresu)
+    #[serde(default)] pub start: String,
+    /// název pípání a podkresu pro zobrazení ve frontě
+    #[serde(default)] pub style_name: String,
+    #[serde(default)] pub bed: String,
+}
 
 pub fn now_local(cfg: &Config) -> DateTime<Local> { Local::now() + chrono::Duration::seconds(cfg.station.time_offset_s) }
 
@@ -296,11 +307,40 @@ impl Automation {
 
     pub fn countdown_at(&self, at: DateTime<Local>, spec: crate::countdown::CountdownSpec, label: &str) -> String {
         let id = uuid::Uuid::new_v4().simple().to_string();
-        self.countdowns.lock().push(PendingCountdown { id: id.clone(), at: at.to_rfc3339(), at_dt: at, label: if label.is_empty() { spec.label() } else { label.to_string() }, spec });
+        self.countdowns.lock().push(PendingCountdown { id: id.clone(), at: at.to_rfc3339(), at_dt: at, label: if label.is_empty() { spec.label() } else { label.to_string() }, spec, source: "manual".into(), key: String::new(), start: String::new(), style_name: String::new(), bed: String::new() });
         id
     }
-    pub fn countdowns(&self) -> Vec<PendingCountdown> { let mut v = self.countdowns.lock().clone(); v.sort_by_key(|c| c.at_dt); v }
-    pub fn countdown_cancel(&self, id: &str) -> bool { let mut l = self.countdowns.lock(); let n = l.len(); l.retain(|c| c.id != id); l.len() != n }
+    pub fn countdowns(&self) -> Vec<PendingCountdown> {
+        let mut v = self.countdowns.lock().clone();
+        // pravidelné časomíry z událostí v příštích 3 hodinách (ještě nezaregistrované)
+        let cfg = self.cfg.read().clone();
+        if cfg.schedule.enabled {
+            let now = now_local(&cfg);
+            let today = now.date_naive();
+            for date in [today, today.succ_opt().unwrap_or(today)] {
+                let Ok(occ) = crate::sched::day_occurrences(&self.db, date) else { continue };
+                for o in occ.into_iter().filter(|o| !o.fired && o.source == "event") {
+                    let Some(t) = crate::sched::occurrence_dt(date, &o.time) else { continue };
+                    if t < now || t > now + chrono::Duration::hours(3) || v.iter().any(|c| c.at_dt == t) { continue; }
+                    let Ok(Some(e)) = crate::sched::get::<crate::sched::SchedEvent>(&self.db, o.id) else { continue };
+                    if e.action != "countdown" { continue; }
+                    let spec = e.countdown.clone().unwrap_or_default();
+                    v.push(PendingCountdown { id: format!("ev:{}", o.key), at: t.to_rfc3339(), at_dt: t, label: if e.name.is_empty() { spec.label() } else { e.name.clone() }, spec, source: "event".into(), key: o.key.clone(), start: String::new(), style_name: String::new(), bed: String::new() });
+                }
+            }
+        }
+        for c in v.iter_mut() {
+            let pre = c.spec.to_final_ms() + if c.spec.bed_track_id.is_some() { (c.spec.bed_pre_s * 1000.0) as i64 } else { 0 };
+            c.start = (c.at_dt - chrono::Duration::milliseconds(pre)).to_rfc3339();
+            c.style_name = crate::countdown::STYLES.iter().find(|x| x.0 == c.spec.style).map(|x| x.1.to_string()).unwrap_or_default();
+            c.bed = c.spec.bed_track_id.and_then(|id| self.db.get_track(id).ok().flatten()).map(|t| if t.artist.is_empty() { t.title } else { format!("{} – {}", t.artist, t.title) }).unwrap_or_default();
+        }
+        v.sort_by_key(|c| c.at_dt); v
+    }
+    pub fn countdown_cancel(&self, id: &str) -> bool {
+        // výskyt pravidelné události: přeskočit jen tento výskyt
+        if let Some(key) = id.strip_prefix("ev:") { return crate::sched::mark_fired(&self.db, key).is_ok(); }
+        let mut l = self.countdowns.lock(); let n = l.len(); l.retain(|c| c.id != id); l.len() != n }
 
     /// Každých 300 ms: časomíry v přesný čas. Start se spočítá tak, aby poslední tón zazněl přesně v cíl;
     /// nepřesnost smyčky se vyrovná krátkou předehrou (ticho / podkres) na začátku souboru.

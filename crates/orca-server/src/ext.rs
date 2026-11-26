@@ -44,6 +44,7 @@ pub fn routes() -> Router<St> {
         .route("/library/export.txt", get(export_txt))
         .route("/library/broadcasts", get(broadcasts))
         .route("/tracks/bulk", post(bulk))
+        .route("/tracks/move", post(tracks_move))
         .route("/tracks/{id}/delete", post(track_delete))
         .route("/tracks/{id}/plays", get(track_plays))
         .route("/tracks/{id}/waveform", get(track_waveform))
@@ -158,11 +159,17 @@ async fn cd_info(State(o): State<St>) -> ApiResult {
 }
 
 #[derive(Deserialize)]
-struct CdReq { #[serde(default)] spec: orca_core::countdown::CountdownSpec, #[serde(default)] when: String, #[serde(default)] at: String, #[serde(default)] label: String }
+struct CdReq { #[serde(default)] spec: orca_core::countdown::CountdownSpec, #[serde(default)] when: String, #[serde(default)] at: String, #[serde(default)] label: String, #[serde(default)] monitor: bool }
 
 /// Náhled: vyrenderovaný zvuk odpočtu (WAV) k poslechu v prohlížeči.
 async fn cd_preview(State(o): State<St>, Json(r): Json<CdReq>) -> ApiResult {
     let (db, dd) = (o.db.clone(), o.data_dir.clone());
+    if r.monitor {
+        // poslech přes předposlech (engine) – nikdy do vysílání
+        let o2 = o.clone();
+        blocking(move || { let (p, ms) = orca_core::countdown::render(&db, &dd, &r.spec, 48000, 0)?; let c = o2.cfg.read().clone(); o2.monitor.play(&c, None, p, 0, ms) }).await?;
+        return Ok(Json(json!({"ok": true})).into_response());
+    }
     let bytes = blocking(move || { let (p, _) = orca_core::countdown::render(&db, &dd, &r.spec, 48000, 0)?; let b = std::fs::read(&p)?; let _ = std::fs::remove_file(&p); Ok(b) }).await?;
     Ok(([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response())
 }
@@ -322,6 +329,28 @@ async fn broadcasts(State(o): State<St>, Query(q): Query<RangeQ>) -> ApiResult {
 #[derive(Deserialize)]
 struct BulkBody { ids: Vec<i64>, patch: Option<TrackPatch>, action: Option<String> }
 /// Hromadné úpravy (Jazler: mass change) a akce: reanalyze | reset_cues | delete | enable | disable | bookmark | unbookmark
+#[derive(serde::Deserialize)]
+struct MoveBody { ids: Vec<i64>, kind: String, #[serde(default)] category: Option<String> }
+/// Přesun souborů do jiného druhu a/nebo kategorie (soubor v knihovně se fyzicky přesune do odpovídající složky).
+/// category = None → zachovat dosavadní kategorii.
+async fn tracks_move(State(o): State<St>, Json(b): Json<MoveBody>) -> ApiResult {
+    let kind = orca_core::model::TrackKind::parse(&b.kind).ok_or_else(|| anyhow::anyhow!("neznámý druh {}", b.kind))?;
+    let o2 = o.clone();
+    let (n, files, errors) = blocking(move || {
+        let (mut n, mut files, mut errors) = (0usize, 0usize, Vec::<String>::new());
+        for id in &b.ids {
+            let Some(t) = o2.db.get_track(*id)? else { continue };
+            let cat = b.category.clone().unwrap_or_else(|| t.category.clone());
+            match o2.library.move_track(*id, kind, &cat) {
+                Ok((nt, moved)) => { n += 1; if moved { files += 1; } o2.engine.queue_refresh_track(&nt); }
+                Err(e) => errors.push(format!("{} – {}: {e}", t.artist, t.title)),
+            }
+        }
+        Ok((n, files, errors))
+    }).await?;
+    Ok(Json(json!({"ok": errors.is_empty(), "count": n, "files_moved": files, "errors": errors})).into_response())
+}
+
 async fn bulk(State(o): State<St>, Json(b): Json<BulkBody>) -> ApiResult {
     let o2 = o.clone();
     let n = blocking(move || {

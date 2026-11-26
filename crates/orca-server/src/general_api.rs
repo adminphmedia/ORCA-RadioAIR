@@ -39,6 +39,7 @@ pub fn routes() -> Router<St> {
         .route("/monitor/play", post(monitor_play))
         .route("/monitor/stop", post(monitor_stop))
         .route("/monitor/status", get(monitor_status))
+        .route("/monitor/route", get(monitor_route))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, ApiError> {
@@ -236,6 +237,10 @@ async fn monitor_play(State(o): State<St>, Json(r): Json<MonReq>) -> ApiResult {
     ok()
 }
 async fn monitor_stop(State(o): State<St>) -> ApiResult { o.monitor.stop(); ok() }
+async fn monitor_route(State(o): State<St>) -> ApiResult {
+    let c = o.cfg.read().clone();
+    Ok(Json(json!(blocking(move || Ok(orca_core::monitor::route(&c))).await?)).into_response())
+}
 async fn monitor_status(State(o): State<St>) -> ApiResult { Ok(Json(json!(o.monitor.status())).into_response()) }
 
 // --- živý vstup a ovládání z pultu (GPI / MIDI / TCP / HTTP)

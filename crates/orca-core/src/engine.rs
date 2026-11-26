@@ -1064,5 +1064,17 @@ impl Engine {
         ok
     }
 
+    /// Soubor se v knihovně přesunul / změnil druh či kategorii → aktualizovat čekající položky fronty.
+    pub fn queue_refresh_track(&self, t: &Track) {
+        let mut hit = false;
+        for it in self.queue.lock().iter_mut() {
+            if it.track.id == t.id && t.id > 0 {
+                it.track.path = t.path.clone(); it.track.filename = t.filename.clone(); it.track.kind = t.kind; it.track.category = t.category.clone();
+                hit = true;
+            }
+        }
+        if hit { self.events.emit(Event::QueueChanged); }
+    }
+
     pub fn queue_clear(&self) { self.queue.lock().clear(); self.events.emit(Event::QueueChanged); }
 }
