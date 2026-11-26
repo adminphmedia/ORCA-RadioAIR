@@ -20,6 +20,9 @@ pub fn routes() -> Router<St> {
         .route("/airlog/{id}/monitor", post(monitor))
         .route("/airlog/{id}/export", post(export))
         .route("/airlog/exports/{name}", get(export_file))
+        .route("/airlog/archive", get(archive_status))
+        .route("/airlog/archive/run", post(archive_run))
+        .route("/airlog/archive/delete", post(archive_delete))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, ApiError> {
@@ -112,4 +115,27 @@ async fn export_file(State(o): State<St>, Path(name): Path<String>, req: axum::e
     let mut res = tower_http::services::ServeFile::new(p).oneshot(req).await.map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.into_response();
     if let Ok(v) = axum::http::HeaderValue::from_str(&format!("attachment; filename*=UTF-8''{}", urlencoding::encode(&name))) { res.headers_mut().insert(axum::http::header::CONTENT_DISPOSITION, v); }
     Ok(res)
+}
+
+async fn archive_status(State(o): State<St>) -> ApiResult {
+    let a = o.airlog.clone();
+    let st = blocking(move || Ok(a.archive_status())).await?;
+    Ok(Json(json!(st)).into_response())
+}
+
+#[derive(Deserialize)]
+struct RunB { #[serde(default)] date: Option<String> }
+/// „Kopírovat teď“ – běží na pozadí, výsledek přijde jako hláška ve studiu.
+async fn archive_run(State(o): State<St>, Json(b): Json<RunB>) -> ApiResult {
+    o.airlog.archive_now(b.date).map_err(|e| bad(&e.to_string()))?;
+    ok()
+}
+
+#[derive(Deserialize)]
+struct DelB { logger_id: String, date: String }
+/// Smazání dne ze systému – jen pokud je ověřeně v archivu.
+async fn archive_delete(State(o): State<St>, Json(b): Json<DelB>) -> ApiResult {
+    let a = o.airlog.clone();
+    let n = blocking(move || a.archive_delete_local(&b.logger_id, &b.date)).await?;
+    Ok(Json(json!({ "ok": true, "deleted": n })).into_response())
 }

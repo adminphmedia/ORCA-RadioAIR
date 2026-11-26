@@ -1,5 +1,12 @@
 # ORCA RadioAIR 0.9.1
 
+## Monitoring: denní kopie na externí nebo síťový disk
+- Monitoring → Kopie na disk: každý den v nastavený čas zkopíruje kompletní záznamy předešlého dne do zvolené složky (USB disk u playout počítače nebo síťový disk / NAS). Složka se vybírá tlačítkem Procházet.
+- Každý soubor se po zkopírování přečte zpět a ověří kontrolním součtem SHA-256; do archivu jdou i soubory .sha256, značky dne a souhrnný SHA256SUMS.
+- Ve studiu vyskočí zelená hláška „Monitoring zkopírován“ (počet souborů, velikost), nebo červená hláška s důvodem chyby, která zůstane do zavření (chyba jde i e-mailem / Telegramem).
+- Odpojený disk: nic se nezapíše jinam, chyba se nahlásí a kopírování se zkusí znovu za hodinu; nezkopírované dny se dohánějí (výchozí 7 dní zpětně). Tlačítko Kopírovat teď.
+- Tabulka Zkopírované dny: výsledek, velikost, kde je kopie. Tlačítko Smazat ze systému smaže den z playout počítače až po novém ověření kopie v archivu; zamčené dny se nemažou. Volitelně mazat automaticky hned po ověřené kopii.
+
 ## Systémové požadavky
 - Ovládací panel → Nápověda → Systémové požadavky (HW): minimální a doporučený hardware pro macOS a Windows, místo na disku, provoz 24/7.
 

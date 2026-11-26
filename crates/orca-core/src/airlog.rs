@@ -109,10 +109,34 @@ pub struct AirLogConfig {
     /// aircheck: kolik sekund před a po mluveném vstupu přidat
     pub aircheck_pre_s: u32,
     pub aircheck_post_s: u32,
+    /// denní kopie záznamů předešlého dne na externí / síťový disk
+    pub archive: ArchiveConfig,
 }
 
 impl Default for AirLogConfig {
-    fn default() -> Self { Self { loggers: vec![LoggerDef::default()], shows: vec![], aircheck_pre_s: 3, aircheck_post_s: 2 } }
+    fn default() -> Self { Self { loggers: vec![LoggerDef::default()], shows: vec![], aircheck_pre_s: 3, aircheck_post_s: 2, archive: ArchiveConfig::default() } }
+}
+
+/// Archiv monitoringu: každý den v nastavený čas zkopíruje kompletní záznamy předešlého dne
+/// do zvolené složky (externí disk, síťový disk / NAS) a ověří je kontrolním součtem SHA-256.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ArchiveConfig {
+    pub enabled: bool,
+    /// cílová složka (musí existovat – odpojený disk se nikdy nenahradí složkou na systémovém disku)
+    pub dir: String,
+    /// HH:MM – kdy kopírovat
+    pub time: String,
+    /// id záznamníků; prázdné = všechny
+    pub loggers: Vec<String>,
+    /// po ověřené kopii rovnou smazat ze systému (jinak se maže ručně po kontrole)
+    pub delete_after: bool,
+    /// kolik dní zpětně dohánět nezkopírované dny (počítač byl vypnutý, disk odpojený)
+    pub catch_up_days: u32,
+}
+
+impl Default for ArchiveConfig {
+    fn default() -> Self { Self { enabled: false, dir: String::new(), time: "02:30".into(), loggers: vec![], delete_after: false, catch_up_days: 7 } }
 }
 
 pub fn ext_of(format: &str) -> &'static str {
@@ -174,11 +198,14 @@ pub struct AirLogger {
     running: Mutex<HashMap<String, Running>>,
     pending_library: Mutex<Vec<(PathBuf, crate::model::TrackKind, String)>>,
     pending_podcast: Mutex<Vec<(PathBuf, String, bool)>>,
+    archive_busy: Arc<AtomicBool>,
+    /// den, kdy už automatické kopírování proběhlo úspěšně; čas dalšího pokusu po chybě
+    archive_done: Mutex<(Option<NaiveDate>, Option<Instant>)>,
 }
 
 impl AirLogger {
     pub fn start(data_dir: PathBuf, cfg: Arc<RwLock<Config>>, engine: Arc<Engine>, events: EventBus) -> Arc<Self> {
-        let me = Arc::new(Self { data_dir, cfg, engine, events, running: Mutex::new(HashMap::new()), pending_library: Mutex::new(vec![]), pending_podcast: Mutex::new(vec![]) });
+        let me = Arc::new(Self { data_dir, cfg, engine, events, running: Mutex::new(HashMap::new()), pending_library: Mutex::new(vec![]), pending_podcast: Mutex::new(vec![]), archive_busy: Arc::new(AtomicBool::new(false)), archive_done: Mutex::new((None, None)) });
         let m = me.clone();
         std::thread::Builder::new().name("orca-airlog".into()).spawn(move || {
             let mut last_house = Instant::now() - Duration::from_secs(3600);
@@ -186,6 +213,7 @@ impl AirLogger {
                 m.sync();
                 if last_house.elapsed() > Duration::from_secs(600) { last_house = Instant::now(); m.housekeeping(); }
                 m.shows_tick();
+                m.archive_tick();
                 std::thread::sleep(Duration::from_secs(2));
             }
         }).ok();
@@ -726,4 +754,290 @@ pub(crate) fn open_input(name: &str) -> Result<(crossbeam_channel::Receiver<Arc<
     let st3 = stop.clone();
     std::thread::spawn(move || { while !st3.load(Ordering::Relaxed) { match rx.recv_timeout(Duration::from_millis(500)) { Ok(v) => { let _ = otx.try_send(Arc::new(v)); } Err(crossbeam_channel::RecvTimeoutError::Timeout) => {} Err(_) => break } } });
     Ok((orx, InputStop(stop)))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Archiv monitoringu – denní kopie na externí / síťový disk
+
+/// Záznam o zkopírování jednoho dne jednoho záznamníku (Logger/archive.json).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ArchiveEntry {
+    pub day: String,
+    pub logger_id: String,
+    pub logger_name: String,
+    /// ok | error
+    pub status: String,
+    pub files: usize,
+    pub bytes: u64,
+    /// kdy proběhlo (RFC 3339)
+    pub at: String,
+    /// složka s kopií
+    pub target: String,
+    pub error: String,
+    /// záznamy dne už byly smazány ze systému (zůstávají jen v archivu)
+    pub deleted: bool,
+    pub deleted_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ArchiveStatus {
+    pub busy: bool,
+    pub target_ok: bool,
+    pub target_free: Option<u64>,
+    pub next_run: Option<String>,
+    pub entries: Vec<ArchiveEntry>,
+    /// dny čekající na zkopírování: (logger_id, den)
+    pub pending: Vec<(String, String)>,
+}
+
+fn archive_state_path(data_dir: &Path) -> PathBuf { data_dir.join("Logger").join("archive.json") }
+
+fn load_archive_state(data_dir: &Path) -> Vec<ArchiveEntry> {
+    std::fs::read_to_string(archive_state_path(data_dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_archive_state(data_dir: &Path, v: &[ArchiveEntry]) {
+    let p = archive_state_path(data_dir);
+    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_vec_pretty(v).unwrap_or_default()).is_ok() { let _ = std::fs::rename(&tmp, &p); }
+}
+
+fn upsert_entry(data_dir: &Path, e: ArchiveEntry) {
+    let mut v = load_archive_state(data_dir);
+    v.retain(|x| !(x.day == e.day && x.logger_id == e.logger_id));
+    v.push(e);
+    v.sort_by(|a, b| b.day.cmp(&a.day).then(a.logger_name.cmp(&b.logger_name)));
+    v.truncate(2000);
+    save_archive_state(data_dir, &v);
+}
+
+fn fmt_bytes(b: u64) -> String {
+    if b >= 1_000_000_000 { format!("{:.1} GB", b as f64 / 1e9).replace('.', ",") } else { format!("{:.0} MB", b as f64 / 1e6) }
+}
+
+fn parse_hhmm(s: &str) -> (u32, u32) {
+    let mut it = s.split(':');
+    let h = it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(2).min(23);
+    let m = it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(30).min(59);
+    (h, m)
+}
+
+/// Kopie s ověřením: nejdřív do dočasného souboru, kontrolní součet kopie musí sedět se zdrojem, pak přejmenování.
+fn copy_verified(src: &Path, dst: &Path, want: &str) -> Result<()> {
+    if dst.is_file() && std::fs::metadata(dst).map(|m| m.len()).ok() == std::fs::metadata(src).map(|m| m.len()).ok() && sha256_file(dst).ok().as_deref() == Some(want) {
+        return Ok(()); // už zkopírováno dříve
+    }
+    let name = dst.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let tmp = dst.with_file_name(format!(".{name}.part"));
+    std::fs::copy(src, &tmp).with_context(|| format!("kopírování {name}"))?;
+    if let Ok(f) = std::fs::File::open(&tmp) { let _ = f.sync_all(); }
+    let got = sha256_file(&tmp).with_context(|| format!("čtení kopie {name}"))?;
+    if got != want { let _ = std::fs::remove_file(&tmp); return Err(anyhow!("kopie souboru {name} nesouhlasí (kontrolní součet)")); }
+    let _ = std::fs::remove_file(dst);
+    std::fs::rename(&tmp, dst).with_context(|| format!("uložení {name}"))?;
+    Ok(())
+}
+
+impl AirLogger {
+    fn archive_loggers(&self) -> (ArchiveConfig, Vec<LoggerDef>) {
+        let c = self.cfg.read().airlog.clone();
+        let l = c.loggers.into_iter().filter(|l| c.archive.loggers.is_empty() || c.archive.loggers.contains(&l.id)).collect();
+        (c.archive, l)
+    }
+
+    /// Dny (před dneškem), které ještě nejsou úspěšně zkopírované.
+    fn archive_pending(&self) -> Vec<(LoggerDef, NaiveDate)> {
+        let (a, loggers) = self.archive_loggers();
+        let state = load_archive_state(&self.data_dir);
+        let today = Local::now().date_naive();
+        let from = today - chrono::Duration::days(a.catch_up_days.clamp(1, 60) as i64);
+        let mut out = vec![];
+        for l in loggers {
+            let dir = logger_dir(&self.data_dir, &l);
+            let days: BTreeSet<String> = list_files(&dir, ext_of(&l.format)).into_iter().map(|f| f.0[..10].to_string()).collect();
+            for d in days {
+                let Ok(nd) = NaiveDate::parse_from_str(&d, "%Y-%m-%d") else { continue };
+                if nd >= today || nd < from { continue; }
+                if state.iter().any(|e| e.day == d && e.logger_id == l.id && e.status == "ok") { continue; }
+                out.push((l.clone(), nd));
+            }
+        }
+        out
+    }
+
+    pub fn archive_status(&self) -> ArchiveStatus {
+        let (a, _) = self.archive_loggers();
+        let target = PathBuf::from(a.dir.trim());
+        let target_ok = !a.dir.trim().is_empty() && target.is_dir();
+        let next_run = if a.enabled {
+            let (h, m) = parse_hhmm(&a.time);
+            let now = Local::now();
+            let done = self.archive_done.lock().0 == Some(now.date_naive());
+            let mut d = now.date_naive();
+            if done { d = d.succ_opt().unwrap_or(d); }
+            Local.from_local_datetime(&d.and_hms_opt(h, m, 0).unwrap()).earliest().map(|x| x.to_rfc3339())
+        } else { None };
+        ArchiveStatus {
+            busy: self.archive_busy.load(Ordering::SeqCst),
+            target_ok,
+            target_free: if target_ok { fs4::available_space(&target).ok() } else { None },
+            next_run,
+            entries: load_archive_state(&self.data_dir),
+            pending: self.archive_pending().into_iter().map(|(l, d)| (l.id, d.format("%Y-%m-%d").to_string())).collect(),
+        }
+    }
+
+    /// Každé 2 s ze smyčky monitoringu: v nastavený čas spustí kopírování (jednou denně, po chybě znovu za hodinu).
+    fn archive_tick(self: &Arc<Self>) {
+        let (a, _) = self.archive_loggers();
+        if !a.enabled || a.dir.trim().is_empty() || self.archive_busy.load(Ordering::SeqCst) { return; }
+        let now = Local::now();
+        let (h, m) = parse_hhmm(&a.time);
+        if now.naive_local().time() < chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap() { return; }
+        {
+            let st = self.archive_done.lock();
+            if st.0 == Some(now.date_naive()) { return; }
+            if let Some(t) = st.1 { if Instant::now() < t { return; } }
+        }
+        let me = self.clone();
+        self.archive_busy.store(true, Ordering::SeqCst);
+        std::thread::Builder::new().name("orca-airlog-archive".into()).spawn(move || {
+            let ok = me.archive_run(None, true);
+            let mut st = me.archive_done.lock();
+            if ok { *st = (Some(Local::now().date_naive()), None); } else { st.1 = Some(Instant::now() + Duration::from_secs(3600)); }
+            me.archive_busy.store(false, Ordering::SeqCst);
+        }).map_err(|_| self.archive_busy.store(false, Ordering::SeqCst)).ok();
+    }
+
+    /// Ruční spuštění („Kopírovat teď“): den RRRR-MM-DD nebo vše čekající.
+    pub fn archive_now(self: &Arc<Self>, day: Option<String>) -> Result<()> {
+        let (a, _) = self.archive_loggers();
+        if a.dir.trim().is_empty() { return Err(anyhow!("nejdřív vyberte cílovou složku archivu")); }
+        let day = match day { Some(d) if !d.is_empty() => Some(NaiveDate::parse_from_str(&d, "%Y-%m-%d").map_err(|_| anyhow!("datum ve tvaru RRRR-MM-DD"))?), _ => None };
+        if self.archive_busy.swap(true, Ordering::SeqCst) { return Err(anyhow!("kopírování už běží")); }
+        let me = self.clone();
+        std::thread::Builder::new().name("orca-airlog-archive".into()).spawn(move || {
+            me.archive_run(day, false);
+            me.archive_busy.store(false, Ordering::SeqCst);
+        }).map_err(|e| { self.archive_busy.store(false, Ordering::SeqCst); anyhow!(e) })?;
+        Ok(())
+    }
+
+    /// Zkopíruje čekající dny (nebo jeden zvolený den znovu). Vrací true, když vše proběhlo bez chyby.
+    fn archive_run(&self, only: Option<NaiveDate>, scheduled: bool) -> bool {
+        let (a, loggers) = self.archive_loggers();
+        let jobs: Vec<(LoggerDef, NaiveDate)> = match only {
+            Some(d) => loggers.into_iter().map(|l| (l, d)).collect(),
+            None => self.archive_pending(),
+        };
+        if jobs.is_empty() {
+            if !scheduled { self.events.alert("info", "airlog_archive_ok", "Archiv monitoringu: není co kopírovat – všechny dny už jsou zkopírované."); }
+            return true;
+        }
+        let root = PathBuf::from(a.dir.trim());
+        let mut oks: Vec<String> = vec![];
+        let mut errs: Vec<String> = vec![];
+        let (mut files_all, mut bytes_all) = (0usize, 0u64);
+        for (l, d) in jobs {
+            let day = d.format("%Y-%m-%d").to_string();
+            let target = root.join(crate::library::sanitize(&l.name)).join(&day);
+            let mut e = ArchiveEntry { day: day.clone(), logger_id: l.id.clone(), logger_name: l.name.clone(), at: Local::now().to_rfc3339(), target: target.to_string_lossy().to_string(), ..Default::default() };
+            match self.archive_day(&l, d, &root, &target) {
+                Ok((n, b)) if n > 0 => {
+                    e.status = "ok".into(); e.files = n; e.bytes = b;
+                    files_all += n; bytes_all += b;
+                    oks.push(format!("{} {}", l.name, d.format("%-d. %-m.")));
+                    if a.delete_after {
+                        let dir = logger_dir(&self.data_dir, &l);
+                        if kept(&dir).contains(&day) { log::info!("archiv: den {day} je zamčený – v systému zůstává"); }
+                        else if self.delete_local_day(&l, &day).is_ok() { e.deleted = true; e.deleted_at = Local::now().to_rfc3339(); }
+                    }
+                }
+                Ok(_) => continue, // den bez záznamů
+                Err(err) => { e.status = "error".into(); e.error = format!("{err:#}"); errs.push(format!("{} {}: {err:#}", l.name, d.format("%-d. %-m."))); }
+            }
+            upsert_entry(&self.data_dir, e);
+        }
+        if !oks.is_empty() {
+            self.events.alert("info", "airlog_archive_ok", format!("Monitoring zkopírován na archivní disk a ověřen: {} ({} {}, {}) → {}", oks.join(", "), files_all, match files_all { 1 => "soubor", 2..=4 => "soubory", _ => "souborů" }, fmt_bytes(bytes_all), root.display()));
+        }
+        if !errs.is_empty() {
+            self.events.alert("error", "airlog_archive_failed", format!("Kopírování monitoringu na archivní disk se nezdařilo – {}", errs.join("; ")));
+        }
+        errs.is_empty()
+    }
+
+    /// Soubory jednoho dne (název, velikost), bez právě nahrávaného souboru.
+    fn day_files(&self, l: &LoggerDef, day: &str) -> Vec<(String, u64)> {
+        let dir = logger_dir(&self.data_dir, l);
+        let mut files = list_files(&dir, ext_of(&l.format));
+        let recording = self.running.lock().get(&l.id).map(|r| r.status.lock().state == "recording").unwrap_or(false);
+        if recording { files.pop(); }
+        files.into_iter().filter(|f| f.0.starts_with(day)).map(|f| (f.0, f.2)).collect()
+    }
+
+    fn archive_day(&self, l: &LoggerDef, d: NaiveDate, root: &Path, target: &Path) -> Result<(usize, u64)> {
+        let day = d.format("%Y-%m-%d").to_string();
+        let files = self.day_files(l, &day);
+        if files.is_empty() { return Ok((0, 0)); }
+        if !root.is_dir() { return Err(anyhow!("cílová složka {} není dostupná (disk odpojený, síť nedostupná?)", root.display())); }
+        let need: u64 = files.iter().map(|f| f.1).sum();
+        if let Ok(free) = fs4::available_space(root) { if free < need + 50_000_000 { return Err(anyhow!("na archivním disku není dost místa (potřeba {}, volno {})", fmt_bytes(need), fmt_bytes(free))); } }
+        std::fs::create_dir_all(target).with_context(|| format!("nelze vytvořit složku {}", target.display()))?;
+        let dir = logger_dir(&self.data_dir, l);
+        let mut sums = String::new();
+        let mut bytes = 0u64;
+        for (name, size) in &files {
+            let src = dir.join(name);
+            let hp = dir.join(format!("{name}.sha256"));
+            let want = match std::fs::read_to_string(&hp).ok().and_then(|t| t.split_whitespace().next().map(str::to_string)) {
+                Some(h) => { if sha256_file(&src)? != h { return Err(anyhow!("záznam {name} v systému je poškozený (nesouhlasí kontrolní součet) – nekopíruji")); } h }
+                None => sha256_file(&src)?,
+            };
+            copy_verified(&src, &target.join(name), &want)?;
+            std::fs::write(target.join(format!("{name}.sha256")), format!("{want}  {name}\n"))?;
+            sums.push_str(&format!("{want}  {name}\n"));
+            bytes += size;
+        }
+        let marks = dir.join(format!("marks-{day}.jsonl"));
+        if marks.is_file() { std::fs::copy(&marks, target.join(format!("marks-{day}.jsonl"))).context("kopírování značek")?; }
+        std::fs::write(target.join("SHA256SUMS"), sums).context("zápis SHA256SUMS")?;
+        Ok((files.len(), bytes))
+    }
+
+    fn delete_local_day(&self, l: &LoggerDef, day: &str) -> Result<usize> {
+        let dir = logger_dir(&self.data_dir, l);
+        let mut n = 0;
+        for (name, _) in self.day_files(l, day) { if remove_seg(&dir, &name) { n += 1; } }
+        let _ = std::fs::remove_file(dir.join(format!("marks-{day}.jsonl")));
+        Ok(n)
+    }
+
+    /// Smazání dne ze systému po kontrole – jen když je ověřeně v archivu (kopie se znovu zkontroluje).
+    pub fn archive_delete_local(&self, logger_id: &str, day: &str) -> Result<usize> {
+        let l = self.def(logger_id)?;
+        NaiveDate::parse_from_str(day, "%Y-%m-%d").map_err(|_| anyhow!("datum ve tvaru RRRR-MM-DD"))?;
+        let mut state = load_archive_state(&self.data_dir);
+        let Some(e) = state.iter_mut().find(|e| e.day == day && e.logger_id == logger_id && e.status == "ok") else { return Err(anyhow!("den {day} není úspěšně zkopírovaný v archivu – nemažu")); };
+        let dir = logger_dir(&self.data_dir, &l);
+        if kept(&dir).contains(day) { return Err(anyhow!("den {day} je zamčený (spor, reklamace) – nejdřív ho odemkněte")); }
+        let target = PathBuf::from(&e.target);
+        if !target.is_dir() { return Err(anyhow!("archivní kopie {} teď není dostupná (disk odpojený?) – nemažu", target.display())); }
+        let files = self.day_files(&l, day);
+        for (name, size) in &files {
+            let dst = target.join(name);
+            let ds = std::fs::metadata(&dst).map(|m| m.len()).map_err(|_| anyhow!("v archivu chybí {name} – nemažu"))?;
+            if ds != *size { return Err(anyhow!("v archivu nesouhlasí velikost {name} – nemažu")); }
+            let want = std::fs::read_to_string(dir.join(format!("{name}.sha256"))).ok().and_then(|t| t.split_whitespace().next().map(str::to_string)).map(Ok).unwrap_or_else(|| sha256_file(&dir.join(name)))?;
+            if sha256_file(&dst)? != want { return Err(anyhow!("archivní kopie {name} nesouhlasí (kontrolní součet) – nemažu")); }
+        }
+        let n = self.delete_local_day(&l, day)?;
+        e.deleted = true;
+        e.deleted_at = Local::now().to_rfc3339();
+        save_archive_state(&self.data_dir, &state);
+        log::info!("archiv: {} {day} smazán ze systému ({n} souborů), kopie v {}", l.name, target.display());
+        Ok(n)
+    }
 }
