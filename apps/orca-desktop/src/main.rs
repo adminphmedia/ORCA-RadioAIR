@@ -109,7 +109,7 @@ fn main() {
                     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build().expect("tokio");
                     rt.block_on(async move {
                         match tokio::net::TcpListener::bind(&bind).await {
-                            Ok(l) => { let _ = tx.send(Ok(())); let _ = axum::serve(l, orca_server::router(orca)).await; }
+                            Ok(l) => { let _ = tx.send(Ok(())); tokio::spawn(orca_server::run_remote_vt(orca.clone())); let _ = axum::serve(l, orca_server::router(orca)).await; }
                             Err(e) => { let _ = tx.send(Err(format!("Port {bind} je obsazený (běží už ORCA?): {e}"))); }
                         }
                     });

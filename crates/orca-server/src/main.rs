@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let orca = tokio::task::spawn_blocking(move || orca_core::Orca::start(&data_dir)).await??;
     let bind = args.bind.unwrap_or_else(|| orca.cfg.read().api.bind.clone());
     let app = orca_server::router(orca.clone());
+    tokio::spawn(orca_server::run_remote_vt(orca.clone()));
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     log::info!("API a UI: http://{bind}");
     axum::serve(listener, app).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;

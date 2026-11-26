@@ -214,15 +214,15 @@ async fn session(State(o): State<St>, req: Request) -> ApiResult {
 }
 
 #[derive(Deserialize)]
-struct LoginReq { name: String, #[serde(default)] pin: String }
-async fn login(State(o): State<St>, Json(r): Json<LoginReq>) -> ApiResult {
+pub(crate) struct LoginReq { name: String, #[serde(default)] pin: String }
+pub(crate) async fn login(State(o): State<St>, Json(r): Json<LoginReq>) -> ApiResult {
     let o2 = o.clone();
     let (token, user) = blocking(move || o2.users.login(&o2.db, &r.name, &r.pin)).await.map_err(|e| ApiError(StatusCode::UNAUTHORIZED, e.1))?;
     orca_core::processing::audit(&o.db, &user.name, "login", "");
     Ok(Json(json!({"ok": true, "token": token, "perms": user.effective(), "user": user})).into_response())
 }
 
-async fn logout(State(o): State<St>, req: Request) -> ApiResult {
+pub(crate) async fn logout(State(o): State<St>, req: Request) -> ApiResult {
     if let Some(t) = session_token(req.headers(), req.uri().query()) { o.users.logout(&t); }
     ok()
 }

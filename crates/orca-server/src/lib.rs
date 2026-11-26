@@ -27,6 +27,7 @@ pub(crate) type ApiResult = Result<Response, ApiError>;
 
 mod airlog_api;
 mod podcast_api;
+mod vt_api;
 mod ext;
 mod general_api;
 mod import_api;
@@ -46,6 +47,18 @@ pub(crate) fn bad(msg: &str) -> ApiError { ApiError(StatusCode::BAD_REQUEST, msg
 pub(crate) fn ok() -> ApiResult { Ok(Json(json!({"ok": true})).into_response()) }
 
 const FALLBACK_UI: &str = include_str!("fallback_ui.html");
+
+/// Složka s webovým UI.
+pub(crate) fn ui_dir(orca: &St) -> Option<std::path::PathBuf> {
+    let c = orca.cfg.read();
+    if !c.api.ui_dir.as_os_str().is_empty() { Some(c.api.ui_dir.clone()) }
+    else if let Some(d) = std::env::var_os("ORCA_UI_DIR") { Some(std::path::PathBuf::from(d)) } else {
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("ui"))).filter(|d| d.join("index.html").is_file())
+    }
+}
+
+/// Voice tracky z domova – samostatný port (spouští main serveru i desktopová aplikace).
+pub async fn run_remote_vt(orca: St) { vt_api::run_remote(orca).await }
 
 pub fn router(orca: St) -> Router {
     let api = Router::new()
@@ -92,6 +105,7 @@ pub fn router(orca: St) -> Router {
         .route("/encoders/{id}/{action}", post(encoder_action))
         .merge(airlog_api::routes())
         .merge(podcast_api::routes())
+        .merge(vt_api::routes())
         .merge(ext::routes())
         .merge(plan::routes())
         .merge(proc_api::routes())
@@ -101,13 +115,7 @@ pub fn router(orca: St) -> Router {
         .layer(middleware::from_fn_with_state(orca.clone(), general_api::perms))
         .layer(middleware::from_fn_with_state(orca.clone(), auth));
 
-    let ui_dir = {
-        let c = orca.cfg.read();
-        if !c.api.ui_dir.as_os_str().is_empty() { Some(c.api.ui_dir.clone()) }
-        else if let Some(d) = std::env::var_os("ORCA_UI_DIR") { Some(std::path::PathBuf::from(d)) } else {
-            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("ui"))).filter(|d| d.join("index.html").is_file())
-        }
-    };
+    let ui_dir = ui_dir(&orca);
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])

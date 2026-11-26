@@ -41,6 +41,30 @@ pub struct Config {
     pub fx: crate::fx::FxConfig,
     /// Podcast – feed, zveřejnění, výchozí úpravy nahrávek
     pub podcast: crate::podcast::PodcastConfig,
+    /// Voice tracky z domova přes web
+    pub remote_vt: RemoteVtConfig,
+}
+
+/// Voice tracky z domova: samostatný port, na kterém je jen stránka pro moderátory (nic jiného z ORCA).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RemoteVtConfig {
+    pub enabled: bool,
+    /// adresa samostatného portu (0.0.0.0 = dostupné ze sítě / tunelu)
+    pub bind: String,
+    /// kategorie voice tracků v knihovně: prázdné = jméno moderátora
+    pub category: String,
+    /// povolit vkládání do playlistů
+    pub playlists: bool,
+    /// povolit vkládání do plánu Music Selectoru (do konceptu)
+    pub selector: bool,
+    /// nejdelší voice track (s)
+    pub max_s: u32,
+    /// výchozí umístění přes skladbu: before_end | bridge | start | none
+    pub default_position: String,
+}
+impl Default for RemoteVtConfig {
+    fn default() -> Self { Self { enabled: false, bind: "0.0.0.0:8760".into(), category: String::new(), playlists: true, selector: true, max_s: 180, default_position: "before_end".into() } }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,6 +138,7 @@ impl Default for Config {
             airlog: crate::airlog::AirLogConfig::default(),
             fx: crate::fx::FxConfig::default(),
             podcast: crate::podcast::PodcastConfig::default(),
+            remote_vt: RemoteVtConfig::default(),
         }
     }
 }
