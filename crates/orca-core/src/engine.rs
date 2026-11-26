@@ -580,7 +580,7 @@ impl Engine {
         let mut last_reopen = Instant::now();
         let mut voices: Vec<Voice> = Vec::new();
         let mut preloaded: Option<(String, Prefetch)> = None;
-        let mut state = if self.cfg.read().auto.start_in_auto { PlayState::Playing } else { PlayState::Stopped };
+        let mut state = if self.cfg.read().auto.start_in_auto && self.cfg.read().link.role != "backup" { PlayState::Playing } else { PlayState::Stopped };
         let mut stop_after = false;
         let mut loop_current = false;
         let mut talkover = false;

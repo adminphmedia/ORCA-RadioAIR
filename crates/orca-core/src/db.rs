@@ -521,6 +521,11 @@ impl Db {
         f(&c)
     }
 
+    pub fn with_conn_mut<R>(&self, f: impl FnOnce(&mut Connection) -> R) -> R {
+        let mut c = self.conn.lock();
+        f(&mut c)
+    }
+
     pub fn delete_track(&self, id: i64) -> Result<()> {
         let c = self.conn.lock();
         c.execute("DELETE FROM tracks WHERE id=?1", [id])?;

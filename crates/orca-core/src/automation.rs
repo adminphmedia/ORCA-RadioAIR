@@ -80,7 +80,7 @@ impl Automation {
         });
         let rx = events.subscribe();
         { let a = a.clone(); std::thread::Builder::new().name("orca-auto-events".into()).spawn(move || { while let Ok(ev) = rx.recv() { a.on_event(ev); } }).ok(); }
-        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { a.countdown_tick(); a.breaks_tick(); a.sched_tick(); a.fill_queue(); a.maintenance(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
+        { let a = a.clone(); std::thread::Builder::new().name("orca-auto-fill".into()).spawn(move || loop { if !crate::link::standby() { a.countdown_tick(); a.breaks_tick(); a.sched_tick(); } a.fill_queue(); a.maintenance(); std::thread::sleep(Duration::from_millis(300)); }).ok(); }
         a
     }
 

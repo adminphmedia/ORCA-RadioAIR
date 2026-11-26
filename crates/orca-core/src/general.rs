@@ -21,6 +21,16 @@ use std::time::{Duration, Instant};
 
 /// Přeloží cestu podle mapování složek (první shoda prefixu).
 pub fn map_path(cfg: &Config, path: &str) -> String {
+    let p = map_path_only(cfg, path);
+    // propojené počítače: soubor stažený z druhého počítače leží ve zrcadlové složce
+    if cfg.link.role != "single" && !Path::new(&p).exists() {
+        let m = crate::link::mirror_path(&crate::link::mirror_dir(cfg), path);
+        if m.is_file() { return m.to_string_lossy().to_string(); }
+    }
+    p
+}
+
+fn map_path_only(cfg: &Config, path: &str) -> String {
     for m in &cfg.general.folder_mappings {
         if m.from.is_empty() { continue; }
         let (f, p) = (m.from.replace('\\', "/").to_lowercase(), path.replace('\\', "/"));
@@ -188,8 +198,21 @@ impl General {
                         Event::TrackStarted { item, channel } if channel == "main" || channel == "bed" => { let c = cfg.read().clone(); write_custom_logs(&c, &data_dir, &item.track, &item.source); }
                         Event::Alert { level, code, message } => {
                             let c = cfg.read().clone();
+                            // Telegram (vlastní odstup opakování, sdílí nastavení s e-mailem)
+                            let tg = &c.general.telegram;
+                            let is_link = code.starts_with("link_");
+                            if tg.enabled && (level == "error" || (tg.min_level == "warning" && level == "warning") || (is_link && level != "debug")) {
+                                let key = format!("tg:{code}:{message}");
+                                if !sent.get(&key).map(|t| t.elapsed() < Duration::from_secs(c.general.email.repeat_min.max(1) as u64 * 60)).unwrap_or(false) {
+                                    sent.insert(key, Instant::now());
+                                    let icon = if level == "error" { "🔴" } else if level == "warning" { "🟠" } else { "🟢" };
+                                    let text = format!("{icon} {} – {}\n{message}\n{}", c.meta.station_long, if c.link.name.is_empty() { "ORCA RadioAIR".to_string() } else { c.link.name.clone() }, chrono::Local::now().format("%d.%m.%Y %H:%M:%S"));
+                                    let tg2 = tg.clone();
+                                    std::thread::spawn(move || { if let Err(e) = crate::link::telegram_send(&tg2, &text) { log::warn!("telegram: {e}"); } });
+                                }
+                            }
                             let e = &c.general.email;
-                            let lvl_ok = level == "error" || (e.min_level == "warning" && level == "warning");
+                            let lvl_ok = level == "error" || (e.min_level == "warning" && level == "warning") || (is_link && level == "info");
                             if !e.enabled || !lvl_ok { continue; }
                             let key = format!("{code}:{message}");
                             if sent.get(&key).map(|t| t.elapsed() < Duration::from_secs(e.repeat_min.max(1) as u64 * 60)).unwrap_or(false) { continue; }

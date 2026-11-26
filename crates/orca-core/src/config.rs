@@ -43,6 +43,8 @@ pub struct Config {
     pub podcast: crate::podcast::PodcastConfig,
     /// Voice tracky z domova přes web
     pub remote_vt: RemoteVtConfig,
+    /// Propojení počítačů: hlavní / záložní / přípravný
+    pub link: crate::link::LinkConfig,
 }
 
 /// Voice tracky z domova: samostatný port, na kterém je jen stránka pro moderátory (nic jiného z ORCA).
@@ -139,6 +141,7 @@ impl Default for Config {
             fx: crate::fx::FxConfig::default(),
             podcast: crate::podcast::PodcastConfig::default(),
             remote_vt: RemoteVtConfig::default(),
+            link: crate::link::LinkConfig::default(),
         }
     }
 }
@@ -1074,6 +1077,8 @@ pub struct GeneralConfig {
     pub auto_logout_min: u32,
     pub folder_mappings: Vec<FolderMapping>,
     pub email: EmailConfig,
+    /// Upozornění do Telegramu
+    pub telegram: crate::link::TelegramConfig,
     pub custom_logs: Vec<CustomLog>,
     pub silence: SilenceConfig,
     pub backup: BackupConfig,
@@ -1101,7 +1106,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         let hk = DEFAULT_HOTKEYS
             .into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-        Self { start_with_os: false, require_login: false, auto_logout_min: 0, folder_mappings: vec![], email: EmailConfig::default(), custom_logs: vec![], silence: SilenceConfig::default(),
+        Self { start_with_os: false, require_login: false, auto_logout_min: 0, folder_mappings: vec![], email: EmailConfig::default(), telegram: crate::link::TelegramConfig { min_level: "error".into(), ..Default::default() }, custom_logs: vec![], silence: SilenceConfig::default(),
             backup: BackupConfig::default(), log_retention_days: 0, editor_path: String::new(), hotkeys: hk, keep_awake: true,
             global_hotkeys_enabled: false, global_hotkeys: DEFAULT_GLOBAL_HOTKEYS.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() }
     }

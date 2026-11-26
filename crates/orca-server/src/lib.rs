@@ -28,6 +28,7 @@ pub(crate) type ApiResult = Result<Response, ApiError>;
 mod airlog_api;
 mod podcast_api;
 mod vt_api;
+mod link_api;
 mod ext;
 mod general_api;
 mod import_api;
@@ -59,6 +60,9 @@ pub(crate) fn ui_dir(orca: &St) -> Option<std::path::PathBuf> {
 
 /// Voice tracky z domova – samostatný port (spouští main serveru i desktopová aplikace).
 pub async fn run_remote_vt(orca: St) { vt_api::run_remote(orca).await }
+
+/// Propojení počítačů (hlavní / záložní / přípravný) – hlídání a port propojení.
+pub async fn run_link(orca: St) { link_api::run(orca).await }
 
 pub fn router(orca: St) -> Router {
     let api = Router::new()
@@ -106,6 +110,7 @@ pub fn router(orca: St) -> Router {
         .merge(airlog_api::routes())
         .merge(podcast_api::routes())
         .merge(vt_api::routes())
+        .merge(link_api::routes())
         .merge(ext::routes())
         .merge(plan::routes())
         .merge(proc_api::routes())

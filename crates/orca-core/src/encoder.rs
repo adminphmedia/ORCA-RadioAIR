@@ -122,6 +122,7 @@ impl EncoderManager {
     }
 
     pub fn autostart(self: &Arc<Self>) {
+        if crate::link::standby() { log::info!("záloha v pohotovosti – streamy se nespouštějí"); return; }
         let ids: Vec<String> = self.cfg.read().encoders.iter().filter(|e| e.enabled && e.autostart).map(|e| e.id.clone()).collect();
         for id in ids { self.start(&id); }
     }

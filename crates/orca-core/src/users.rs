@@ -162,10 +162,10 @@ pub fn required_perm(method: &str, path: &str) -> Option<&'static str> {
     // voice tracky z domova kontrolují přihlášení a oprávnění samy (vždy, i bez povinného přihlášení)
     if p.starts_with("/vt/") || p == "/vt" { return None; }
     if !write { return None; }
-    if pick(&["/transport", "/gpio", "/queue", "/instants", "/pads", "/mode", "/monitor", "/memos", "/record"]) { return Some("studio"); }
+    if pick(&["/link/takeover", "/link/handback", "/transport", "/gpio", "/queue", "/instants", "/pads", "/mode", "/monitor", "/memos", "/record"]) { return Some("studio"); }
     if pick(&["/tracks", "/library", "/categories", "/upload", "/analyze", "/stitch", "/ai/track-notes", "/ai/batch", "/video"]) { return Some("library"); }
     if pick(&["/spots", "/campaigns", "/breaks"]) { return Some("spots"); }
-    if pick(&["/plan", "/sched", "/selector", "/playlists", "/events", "/shows", "/episodes", "/grid", "/rotations"]) { return Some("schedule"); }
+    if pick(&["/link/pull", "/link/push", "/plan", "/sched", "/selector", "/playlists", "/events", "/shows", "/episodes", "/grid", "/rotations"]) { return Some("schedule"); }
     if pick(&["/encoders", "/relay", "/meta", "/rds", "/dab", "/outputs"]) { return Some("broadcast"); }
     if pick(&["/processing", "/proc"]) { return Some("processing"); }
     if pick(&["/reports"]) { return Some("reports"); }
