@@ -1,3 +1,38 @@
+# ORCA RadioAIR 0.9.0 – testovací verze
+
+## Nové: Propojení počítačů – záložní a přípravný počítač
+- Role počítače: samostatný, hlavní vysílací, záložní vysílací, přípravný. Spojení chráněné společným klíčem (port 8770).
+- Záložní počítač v pohotovosti: každou minutu stahuje změny z hlavního (databáze, nastavení, nové zvukové soubory), nehraje ani nestreamuje. Nastavení vázaná na počítač (zvuková karta, mikrofon, GPI, efekty, mapování složek…) se nepřepisují.
+- Hlídání každou sekundu: když hlavní neodpovídá (výchozí 5 s), dlouho hraje ticho, nebo (volitelně) zastavil vysílání, záloha okamžitě převezme vysílání – automatika, streamy, upozornění. Hlavní hlídá zálohu taky (upozornění, když není jištěno).
+- Návrat: automaticky, když hlavní 15 s znovu vysílá, nebo ručně tlačítkem. Ruční převzetí. Odznak Záloha / ZÁLOHA VYSÍLÁ v horní liště.
+- Přípravný počítač: Stáhnout z vysílání → připravit plány, kampaně, playlisty, nové skladby → Odeslat do vysílání (nové soubory se nahrají samy, na hlavním se zachová statistika hraní, předem záloha). Ochrana proti přepsání změn provedených mezitím na vysílacím počítači.
+
+## Nové: Upozornění do Telegramu
+- Vlastní bot (BotFather), vyhledání chatu jedním tlačítkem, zkušební zpráva. Převzetí a návrat vysílání se posílají vždy (i e-mailem).
+
+## Nové: Voice tracky z domova přes web
+- Samostatná stránka pro moderátory (počítač i mobil): přihlášení jménem a PINem, výběr playlistu nebo dne plánu Music Selectoru, poslech začátku a konce skladeb, nahrávání mikrofonem s ukazatelem úrovně, poslech celého přechodu, odeslání. ORCA nahrávku ořízne od ticha, převede do MP3 a vloží na místo (do plánu jako koncept).
+- Běží na samostatném portu (8760), kde je jen přihlášení a voice tracky. Nové oprávnění Voice tracky z domova. Návod pro https přes Tailscale / Cloudflare Tunnel.
+
+## Nové: Reklama v síti stanic
+- Centrála posílá při reklamním bloku signál začátku a konce (s délkou bloku) regionálním stanicím.
+- Regionální stanice při převzetí programu centrály odvysílá místní reklamní blok podle svého plánu, jingly, výplň do délky bloku centrály (+ zpoždění streamu) a vrátí se na program centrály. Signál přijme i z jiného systému (UDP text nebo HTTP).
+
+## Nové: Editor přechodů (vícestopý)
+- Tři stopy (konec skladby, začátek další, hlas/jingle přes ně), posouvání myší, poslech mixu, uložit jen pro toto vysílání nebo do knihovny.
+
+## Nové: Podcast a editor nahrávek
+- Střih nahrávek (vyřezání, ořez), znělka na začátek a konec, sweeper přes úvod s ducknutím, prolnutí, sjednocení hlasitosti (−16 LUFS), poslech, export MP3, epizody s RSS feedem (iTunes) a nahrání na FTP/SFTP. Automatický podcast z nahraného pořadu.
+
+## Nové: Externí efekty VST / VST3 / AU a hardwarový procesor
+- Průvodce zapojením (plugin host + virtuální kabel BlackHole / VB-Cable, nebo procesor Optimod/Omnia), návrat zpracovaného zvuku pro streamy a nahrávání, pojistka při výpadku efektů.
+
+## Nové: Now playing na FTP / SFTP / TuneIn / HTTP / TCP / UDP
+- Služby se šablonou textu, zkouška jedním tlačítkem, stav posledního odeslání.
+
+## Nové: Globální klávesové zkratky
+- Ovládání studia klávesami i když je ORCA na pozadí (desktopová aplikace).
+
 # ORCA RadioAIR 0.8.0 – testovací verze
 
 ## Nové: Monitoring – nahrávání vysílání
