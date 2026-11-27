@@ -108,8 +108,27 @@ jobs:
           security create-keychain -p "$KP" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
           security unlock-keychain -p "$KP" "$KC"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          # secret může obsahovat zalomení řádků, mezery nebo uvozovky – vše kromě znaků base64 se zahodí
+          P12="$RUNNER_TEMP/cert.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | tr -d '\r\n\t "'"'" | base64 --decode > "$P12" 2>/dev/null || true
+          SZ=$(wc -c < "$P12" | tr -d ' ')
+          echo "Certifikát: $SZ bajtů po dekódování"
+          if [ "$SZ" -lt 500 ]; then echo "::error::APPLE_CERTIFICATE není platný base64 text souboru .p12 (po dekódování jen $SZ bajtů). Vložte výstup příkazu: base64 -i certifikat.p12 | pbcopy"; exit 1; fi
+          if head -c 30 "$P12" | grep -q "BEGIN"; then echo "::error::APPLE_CERTIFICATE je text PEM, ne soubor .p12. Exportujte z Klíčenky (Moje certifikáty → Exportovat → formát .p12) a vložte base64 -i certifikat.p12 | pbcopy"; exit 1; fi
+          if openssl x509 -inform DER -in "$P12" -noout 2>/dev/null; then echo "::error::APPLE_CERTIFICATE je samotný certifikát (.cer) bez soukromého klíče. V Klíčence → Moje certifikáty rozbalte „Developer ID Application“, ověřte že pod ním je klíč, a exportujte jako .p12."; exit 1; fi
+          if ! security import "$P12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security; then
+            # novější macOS exportuje .p12 šifrované AES-256; když ho security neumí, přebalí se přes OpenSSL
+            echo "Přímý import selhal – zkouším přebalit .p12 přes OpenSSL"
+            OSSL=$(brew --prefix openssl@3 2>/dev/null)/bin/openssl; [ -x "$OSSL" ] || OSSL=openssl
+            if ! "$OSSL" pkcs12 -in "$P12" -passin env:APPLE_CERTIFICATE_PASSWORD -nodes -out "$RUNNER_TEMP/cert.pem" 2>"$RUNNER_TEMP/ossl.err"; then
+              cat "$RUNNER_TEMP/ossl.err" | grep -v -i "pass" | head -5
+              echo "::error::Soubor .p12 nejde otevřít – nejspíš nesouhlasí heslo APPLE_CERTIFICATE_PASSWORD (heslo zadané při exportu z Klíčenky), nebo APPLE_CERTIFICATE neobsahuje .p12."; exit 1
+            fi
+            "$OSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/cert.pem" -out "$RUNNER_TEMP/cert2.p12" -passout env:APPLE_CERTIFICATE_PASSWORD 2>/dev/null || "$OSSL" pkcs12 -export -in "$RUNNER_TEMP/cert.pem" -out "$RUNNER_TEMP/cert2.p12" -passout env:APPLE_CERTIFICATE_PASSWORD
+            rm -f "$RUNNER_TEMP/cert.pem"
+            security import "$RUNNER_TEMP/cert2.p12" -k "$KC" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+            rm -f "$RUNNER_TEMP/cert2.p12"
+          fi
           rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC" > /dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
