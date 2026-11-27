@@ -1,3 +1,9 @@
+# ORCA RadioAIR 0.9.2
+
+## Nová ikona a logo
+- Finální ikona aplikace na ploše, v Docku / na hlavním panelu, v instalátoru (macOS .icns, Windows .ico).
+- Logo ORCA RadioAIR v horní liště (na užších obrazovkách jen ikona), na úvodní obrazovce, v oknech panelů a na stránce Voice tracky z domova; ve světlém motivu tmavomodrý nápis.
+
 # ORCA RadioAIR 0.9.1
 
 ## Monitoring: denní kopie na externí nebo síťový disk
